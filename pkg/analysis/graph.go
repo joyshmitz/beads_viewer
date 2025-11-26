@@ -163,28 +163,13 @@ func (a *Analyzer) Analyze() GraphStats {
 	sorted, err := topo.Sort(a.g)
 	if err == nil {
 		// Sort returns roughly "execution order".
-		// Prereqs (B) come after Dependents (A) in standard Sort?
-		// topo.Sort returns nodes such that for every edge u->v, u comes before v.
-		// If A->B (A depends on B), A comes before B?
-		// No, usually Topo sort is for task scheduling: if B must be done before A, edge is B->A.
-		// We defined A->B (A depends on B).
-		// So if we want execution order, we need to reverse edges or interpret the sort.
-		// In A->B graph, A appears before B.
-		// So `sorted` list is "Start with Dependent -> End with Root Prereq".
-		// Reverse it for "Start with Prereq -> End with Final Product".
+		// ... (comments) ...
 		for i := len(sorted) - 1; i >= 0; i-- {
 			stats.TopologicalOrder = append(stats.TopologicalOrder, a.nodeToID[sorted[i].ID()])
 		}
-	}
-
-	// 6. Critical Path Heuristic
-	// Longest path to a root.
-	// We can compute "Height" of each node in DAG.
-	// Height(u) = 1 + max(Height(v)) for all u->v.
-	// Since graph might have cycles, we operate on the condensation or just handle iteratively if DAG.
-	// If err != nil (cycles), skip DAG-only stats.
-	if err == nil {
-		stats.CriticalPathScore = a.computeHeights()
+		
+		// 6. Critical Path Heuristic (DAG only)
+		stats.CriticalPathScore = a.computeHeights(sorted)
 	}
 
 	// 7. Density
@@ -197,9 +182,9 @@ func (a *Analyzer) Analyze() GraphStats {
 	return stats
 }
 
-func (a *Analyzer) computeHeights() map[string]float64 {
+func (a *Analyzer) computeHeights(sorted []graph.Node) map[string]float64 {
 	heights := make(map[int64]float64)
-	sorted, _ := topo.Sort(a.g)
+	// sorted is already a valid topological sort of a.g
 
 	impactScores := make(map[string]float64)
 

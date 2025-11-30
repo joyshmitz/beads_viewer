@@ -20,11 +20,14 @@ type Release struct {
 // Returns the new version tag if an update is available, empty string otherwise.
 func CheckForUpdates() (string, string, error) {
 	// Set a short timeout to avoid blocking startup for too long
-	client := http.Client{
+	client := &http.Client{
 		Timeout: 2 * time.Second,
 	}
+	return checkForUpdates(client, "https://api.github.com/repos/Dicklesworthstone/beads_viewer/releases/latest")
+}
 
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/Dicklesworthstone/beads_viewer/releases/latest", nil)
+func checkForUpdates(client *http.Client, url string) (string, string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -59,12 +62,27 @@ func CheckForUpdates() (string, string, error) {
 	return "", "", nil
 }
 
-// compareVersions compares semver-ish strings with optional leading 'v'.
-// Returns 1 if v1>v2, -1 if v1<v2, 0 if equal. Falls back to lexicographic
-// comparison only if parsing fails.
+// compareVersions compares semver-ish strings with optional leading 'v' and optional pre-release
+// suffix (e.g., v1.2.3-alpha). Pre-release versions are considered LOWER than their corresponding
+// release version per SemVer spec.
+// Returns 1 if v1>v2, -1 if v1<v2, 0 if equal. Falls back to lexicographic comparison only if
+// parsing fails.
 func compareVersions(v1, v2 string) int {
-	parse := func(v string) []int {
+	type parsed struct {
+		parts      []int
+		prerelease bool
+		preLabel   string
+	}
+
+	parse := func(v string) *parsed {
 		v = strings.TrimPrefix(v, "v")
+		prerelease := false
+		preLabel := ""
+		if idx := strings.Index(v, "-"); idx != -1 {
+			prerelease = true
+			preLabel = v[idx+1:]
+			v = v[:idx] // compare only main version numbers
+		}
 		parts := strings.Split(v, ".")
 		res := make([]int, 3)
 		for i := 0; i < len(res) && i < len(parts); i++ {
@@ -74,7 +92,7 @@ func compareVersions(v1, v2 string) int {
 				return nil
 			}
 		}
-		return res
+		return &parsed{parts: res, prerelease: prerelease, preLabel: preLabel}
 	}
 
 	p1 := parse(v1)
@@ -82,10 +100,26 @@ func compareVersions(v1, v2 string) int {
 
 	if p1 != nil && p2 != nil {
 		for i := 0; i < 3; i++ {
-			if p1[i] > p2[i] {
+			if p1.parts[i] > p2.parts[i] {
 				return 1
 			}
-			if p1[i] < p2[i] {
+			if p1.parts[i] < p2.parts[i] {
+				return -1
+			}
+		}
+		// main versions equal: compare prerelease labels
+		if p1.prerelease || p2.prerelease {
+			if p1.prerelease && !p2.prerelease {
+				return -1 // prerelease is lower than release
+			}
+			if !p1.prerelease && p2.prerelease {
+				return 1
+			}
+			// both prerelease: lexicographic compare of labels
+			if p1.preLabel > p2.preLabel {
+				return 1
+			}
+			if p1.preLabel < p2.preLabel {
 				return -1
 			}
 		}

@@ -15,9 +15,9 @@ func TestLoadIssuesRobustness(t *testing.T) {
 	}
 	defer os.Remove(f.Name())
 
-	content := `{"id": "1", "title": "Good Issue", "status": "open", "priority": 1}
+	content := `{"id": "1", "title": "Good Issue", "status": "open", "priority": 1, "issue_type": "task"}
 {INVALID JSON}
-{"id": "2", "title": "Another Good Issue", "status": "closed", "priority": 2}
+{"id": "2", "title": "Another Good Issue", "status": "closed", "priority": 2, "issue_type": "bug"}
 `
 	if _, err := f.WriteString(content); err != nil {
 		t.Fatal(err)

@@ -132,6 +132,13 @@ func LoadIssuesFromFile(path string) ([]model.Issue, error) {
 			// In a real app we might want to log this to a debug log
 			continue
 		}
+
+		// Validate issue
+		if err := issue.Validate(); err != nil {
+			// Skip invalid issues
+			continue
+		}
+
 		issues = append(issues, issue)
 	}
 

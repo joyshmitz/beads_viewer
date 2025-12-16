@@ -1600,6 +1600,13 @@ func main() {
 			os.Exit(1)
 		}
 
+		// Resolve beads file path (bv-history fix)
+		beadsPath, err := loader.FindJSONLPath(filepath.Join(cwd, ".beads"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
+			os.Exit(1)
+		}
+
 		// Build correlator options
 		opts := correlation.CorrelatorOptions{
 			BeadID: *beadHistory,
@@ -1628,8 +1635,8 @@ func main() {
 			}
 		}
 
-		// Generate report
-		correlator := correlation.NewCorrelator(cwd)
+		// Generate report with explicit beads path
+		correlator := correlation.NewCorrelator(cwd, beadsPath)
 		report, err := correlator.GenerateReport(beadInfos, opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating history report: %v\n", err)

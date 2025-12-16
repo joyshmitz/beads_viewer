@@ -1243,6 +1243,323 @@ func TestComputeLabelPageRankGetTopCoreIssues(t *testing.T) {
 }
 
 // ============================================================================
+// Label Critical Path Tests (bv-115)
+// ============================================================================
+
+func TestComputeLabelCriticalPathEmpty(t *testing.T) {
+	// Empty subgraph
+	sg := ComputeLabelSubgraph([]model.Issue{}, "api")
+	result := ComputeLabelCriticalPath(sg)
+
+	if result.PathLength != 0 {
+		t.Errorf("Expected 0 path length, got %d", result.PathLength)
+	}
+	if len(result.Path) != 0 {
+		t.Errorf("Expected empty path, got %v", result.Path)
+	}
+	if result.HasCycle {
+		t.Error("Empty subgraph should not have cycle")
+	}
+}
+
+func TestComputeLabelCriticalPathSingleNode(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Labels: []string{"api"}, Title: "Single issue"},
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "api")
+
+	if result.PathLength != 1 {
+		t.Errorf("Expected path length 1, got %d", result.PathLength)
+	}
+	if len(result.Path) != 1 || result.Path[0] != "bv-1" {
+		t.Errorf("Expected path [bv-1], got %v", result.Path)
+	}
+	if result.MaxHeight != 1 {
+		t.Errorf("Expected max height 1, got %d", result.MaxHeight)
+	}
+}
+
+func TestComputeLabelCriticalPathChain(t *testing.T) {
+	// Chain: bv-1 blocks bv-2 blocks bv-3 (all api)
+	issues := []model.Issue{
+		{ID: "bv-1", Labels: []string{"api"}, Title: "Root"},
+		{
+			ID:     "bv-2",
+			Labels: []string{"api"},
+			Title:  "Middle",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "bv-3",
+			Labels: []string{"api"},
+			Title:  "Leaf",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-2", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "api")
+
+	// Critical path should be bv-1 -> bv-2 -> bv-3
+	if result.PathLength != 3 {
+		t.Errorf("Expected path length 3, got %d", result.PathLength)
+	}
+	expectedPath := []string{"bv-1", "bv-2", "bv-3"}
+	for i, id := range expectedPath {
+		if result.Path[i] != id {
+			t.Errorf("Path[%d]: expected %s, got %s", i, id, result.Path[i])
+		}
+	}
+
+	// Max height should be 3
+	if result.MaxHeight != 3 {
+		t.Errorf("Expected max height 3, got %d", result.MaxHeight)
+	}
+
+	// Check individual heights
+	if result.AllHeights["bv-1"] != 1 {
+		t.Errorf("Expected bv-1 height 1, got %d", result.AllHeights["bv-1"])
+	}
+	if result.AllHeights["bv-2"] != 2 {
+		t.Errorf("Expected bv-2 height 2, got %d", result.AllHeights["bv-2"])
+	}
+	if result.AllHeights["bv-3"] != 3 {
+		t.Errorf("Expected bv-3 height 3, got %d", result.AllHeights["bv-3"])
+	}
+}
+
+func TestComputeLabelCriticalPathDiamond(t *testing.T) {
+	// Diamond shape: bv-1 blocks both bv-2 and bv-3, both block bv-4
+	// Critical path length is 3 (any path through the diamond)
+	issues := []model.Issue{
+		{ID: "bv-1", Labels: []string{"api"}, Title: "Top"},
+		{
+			ID:     "bv-2",
+			Labels: []string{"api"},
+			Title:  "Left",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "bv-3",
+			Labels: []string{"api"},
+			Title:  "Right",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "bv-4",
+			Labels: []string{"api"},
+			Title:  "Bottom",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-2", Type: model.DepBlocks},
+				{DependsOnID: "bv-3", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "api")
+
+	// Path length should be 3 (bv-1 -> bv-2 or bv-3 -> bv-4)
+	if result.PathLength != 3 {
+		t.Errorf("Expected path length 3, got %d", result.PathLength)
+	}
+
+	// Path should start with bv-1 and end with bv-4
+	if result.Path[0] != "bv-1" {
+		t.Errorf("Path should start with bv-1, got %s", result.Path[0])
+	}
+	if result.Path[2] != "bv-4" {
+		t.Errorf("Path should end with bv-4, got %s", result.Path[2])
+	}
+
+	// Middle should be either bv-2 or bv-3
+	middle := result.Path[1]
+	if middle != "bv-2" && middle != "bv-3" {
+		t.Errorf("Middle of path should be bv-2 or bv-3, got %s", middle)
+	}
+}
+
+func TestComputeLabelCriticalPathWithExternalDeps(t *testing.T) {
+	// bv-1 (api) is blocked by bv-4 (core), so critical path includes non-core issue
+	issues := []model.Issue{
+		{ID: "bv-4", Labels: []string{"core"}, Title: "External blocker"},
+		{
+			ID:     "bv-1",
+			Labels: []string{"api"},
+			Title:  "Blocked by external",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-4", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "bv-2",
+			Labels: []string{"api"},
+			Title:  "Blocked by api issue",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "api")
+
+	// Path should be bv-4 -> bv-1 -> bv-2 (length 3)
+	if result.PathLength != 3 {
+		t.Errorf("Expected path length 3, got %d", result.PathLength)
+	}
+	expectedPath := []string{"bv-4", "bv-1", "bv-2"}
+	for i, id := range expectedPath {
+		if result.Path[i] != id {
+			t.Errorf("Path[%d]: expected %s, got %s", i, id, result.Path[i])
+		}
+	}
+}
+
+func TestComputeLabelCriticalPathCycle(t *testing.T) {
+	// Create a cycle: bv-1 -> bv-2 -> bv-3 -> bv-1
+	issues := []model.Issue{
+		{
+			ID:     "bv-1",
+			Labels: []string{"cycle"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-3", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "bv-2",
+			Labels: []string{"cycle"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "bv-3",
+			Labels: []string{"cycle"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-2", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "cycle")
+
+	// Should detect cycle
+	if !result.HasCycle {
+		t.Error("Expected HasCycle=true for cyclic graph")
+	}
+}
+
+func TestComputeLabelCriticalPathIsMember(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Labels: []string{"api"}},
+		{
+			ID:     "bv-2",
+			Labels: []string{"api"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+		{ID: "bv-3", Labels: []string{"api"}}, // Not on critical path
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "api")
+
+	// bv-1 and bv-2 are on critical path
+	if !result.IsCriticalPathMember("bv-1") {
+		t.Error("bv-1 should be on critical path")
+	}
+	if !result.IsCriticalPathMember("bv-2") {
+		t.Error("bv-2 should be on critical path")
+	}
+	// bv-3 is not on critical path (it's isolated)
+	if result.IsCriticalPathMember("bv-3") {
+		t.Error("bv-3 should not be on critical path")
+	}
+	// Non-existent issue
+	if result.IsCriticalPathMember("bv-999") {
+		t.Error("bv-999 should not be on critical path")
+	}
+}
+
+func TestComputeLabelCriticalPathTitles(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Labels: []string{"api"}, Title: "First task"},
+		{
+			ID:     "bv-2",
+			Labels: []string{"api"},
+			Title:  "Second task",
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "api")
+
+	// Check titles are populated
+	if len(result.PathTitles) != 2 {
+		t.Errorf("Expected 2 titles, got %d", len(result.PathTitles))
+	}
+	if result.PathTitles[0] != "First task" {
+		t.Errorf("Expected first title 'First task', got '%s'", result.PathTitles[0])
+	}
+	if result.PathTitles[1] != "Second task" {
+		t.Errorf("Expected second title 'Second task', got '%s'", result.PathTitles[1])
+	}
+}
+
+func TestComputeLabelCriticalPathMultipleRoots(t *testing.T) {
+	// Two independent chains, one longer than the other
+	// Chain 1: bv-1 -> bv-2 (length 2)
+	// Chain 2: bv-3 -> bv-4 -> bv-5 (length 3)
+	issues := []model.Issue{
+		{ID: "bv-1", Labels: []string{"api"}},
+		{
+			ID:     "bv-2",
+			Labels: []string{"api"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-1", Type: model.DepBlocks},
+			},
+		},
+		{ID: "bv-3", Labels: []string{"api"}},
+		{
+			ID:     "bv-4",
+			Labels: []string{"api"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-3", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "bv-5",
+			Labels: []string{"api"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "bv-4", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	result := ComputeLabelCriticalPathFromIssues(issues, "api")
+
+	// Critical path should be the longer chain: bv-3 -> bv-4 -> bv-5
+	if result.PathLength != 3 {
+		t.Errorf("Expected path length 3, got %d", result.PathLength)
+	}
+	expectedPath := []string{"bv-3", "bv-4", "bv-5"}
+	for i, id := range expectedPath {
+		if result.Path[i] != id {
+			t.Errorf("Path[%d]: expected %s, got %s", i, id, result.Path[i])
+		}
+	}
+}
+
+// ============================================================================
 // Label Attention Score Tests (bv-116)
 // ============================================================================
 

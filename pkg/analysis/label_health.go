@@ -7,6 +7,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"gonum.org/v1/gonum/graph/network"
 	"gonum.org/v1/gonum/graph/simple"
+	"gonum.org/v1/gonum/graph/topo"
 )
 
 // ============================================================================
@@ -1358,6 +1359,178 @@ func (r *LabelPageRankResult) GetTopCoreIssues(n int) []RankedIssue {
 // GetNormalizedScore returns the normalized (0-1) score for an issue
 func (r *LabelPageRankResult) GetNormalizedScore(id string) float64 {
 	return r.Normalized[id]
+}
+
+// ============================================================================
+// Label Critical Path (bv-115)
+// Find the longest dependency chain within a label's subgraph
+// ============================================================================
+
+// LabelCriticalPathResult contains the critical path for a label subgraph
+type LabelCriticalPathResult struct {
+	Label       string   `json:"label"`        // The label analyzed
+	Path        []string `json:"path"`         // Issue IDs in critical path order (root -> leaf)
+	PathLength  int      `json:"path_length"`  // Number of issues in the path
+	PathTitles  []string `json:"path_titles"`  // Titles corresponding to path IDs
+	AllHeights  map[string]int `json:"all_heights"` // Heights for all issues in subgraph
+	MaxHeight   int      `json:"max_height"`   // Maximum height in the subgraph
+	IssueCount  int      `json:"issue_count"`  // Total issues in subgraph
+	HasCycle    bool     `json:"has_cycle"`    // True if cycle detected (path unreliable)
+}
+
+// ComputeLabelCriticalPath finds the longest dependency chain in a label subgraph.
+// The critical path represents the longest sequence of blocking dependencies,
+// useful for identifying bottleneck structures within a label's issue set.
+//
+// Returns the path from root (blocker with no parents in subgraph) to leaf
+// (issue blocking nothing in subgraph).
+func ComputeLabelCriticalPath(sg LabelSubgraph) LabelCriticalPathResult {
+	result := LabelCriticalPathResult{
+		Label:      sg.Label,
+		Path:       []string{},
+		PathTitles: []string{},
+		AllHeights: make(map[string]int),
+		IssueCount: sg.IssueCount,
+	}
+
+	if sg.IsEmpty() {
+		return result
+	}
+
+	// Build gonum graph from subgraph adjacency
+	g := simple.NewDirectedGraph()
+	idToNode := make(map[string]int64, sg.IssueCount)
+	nodeToID := make(map[int64]string, sg.IssueCount)
+
+	// Add nodes
+	for _, id := range sg.AllIssues {
+		n := g.NewNode()
+		g.AddNode(n)
+		idToNode[id] = n.ID()
+		nodeToID[n.ID()] = id
+	}
+
+	// Add edges from adjacency (blocker -> blocked)
+	for from, toList := range sg.Adjacency {
+		fromNode, ok := idToNode[from]
+		if !ok {
+			continue
+		}
+		for _, to := range toList {
+			toNode, exists := idToNode[to]
+			if !exists {
+				continue
+			}
+			g.SetEdge(g.NewEdge(g.Node(fromNode), g.Node(toNode)))
+		}
+	}
+
+	// Topological sort - handles cycles gracefully
+	sorted, err := topo.Sort(g)
+	if err != nil {
+		// Cycle detected - mark it and return early
+		result.HasCycle = true
+		return result
+	}
+
+	// Compute heights using dynamic programming
+	// Height = 1 + max(parent heights)
+	// We process in topological order so parents are computed first
+	heights := make(map[int64]int)
+	parent := make(map[int64]int64) // Track the parent that gave max height
+
+	for _, n := range sorted {
+		nid := n.ID()
+		maxParentHeight := 0
+		var bestParent int64 = -1
+
+		// Look at incoming edges (parents/blockers)
+		to := g.To(nid)
+		for to.Next() {
+			p := to.Node()
+			if h, ok := heights[p.ID()]; ok {
+				if h > maxParentHeight {
+					maxParentHeight = h
+					bestParent = p.ID()
+				}
+			}
+		}
+
+		heights[nid] = 1 + maxParentHeight
+		if bestParent >= 0 {
+			parent[nid] = bestParent
+		}
+	}
+
+	// Convert heights to string IDs and find max
+	var maxNode int64 = -1
+	maxHeight := 0
+	for nodeID, h := range heights {
+		issueID := nodeToID[nodeID]
+		result.AllHeights[issueID] = h
+		if h > maxHeight {
+			maxHeight = h
+			maxNode = nodeID
+		}
+	}
+	result.MaxHeight = maxHeight
+
+	// Reconstruct the critical path from max node back to root
+	if maxNode >= 0 {
+		// Build path in reverse (from leaf to root)
+		var pathReverse []int64
+		current := maxNode
+		for {
+			pathReverse = append(pathReverse, current)
+			p, hasParent := parent[current]
+			if !hasParent {
+				break
+			}
+			current = p
+		}
+
+		// Reverse to get root -> leaf order
+		for i := len(pathReverse) - 1; i >= 0; i-- {
+			issueID := nodeToID[pathReverse[i]]
+			result.Path = append(result.Path, issueID)
+			title := ""
+			if iss, ok := sg.IssueMap[issueID]; ok {
+				title = iss.Title
+			}
+			result.PathTitles = append(result.PathTitles, title)
+		}
+	}
+
+	result.PathLength = len(result.Path)
+	return result
+}
+
+// ComputeLabelCriticalPathFromIssues is a convenience function that creates
+// the subgraph and computes the critical path in one call.
+func ComputeLabelCriticalPathFromIssues(issues []model.Issue, label string) LabelCriticalPathResult {
+	sg := ComputeLabelSubgraph(issues, label)
+	return ComputeLabelCriticalPath(sg)
+}
+
+// GetCriticalPathIssues returns the full issues on the critical path
+func (r *LabelCriticalPathResult) GetCriticalPathIssues(sg LabelSubgraph) []model.Issue {
+	var issues []model.Issue
+	for _, id := range r.Path {
+		if iss, ok := sg.IssueMap[id]; ok {
+			issues = append(issues, iss)
+		}
+	}
+	return issues
+}
+
+// IsCriticalPathMember returns true if the given issue ID is on the critical path
+func (r *LabelCriticalPathResult) IsCriticalPathMember(id string) bool {
+	for _, pid := range r.Path {
+		if pid == id {
+			return true
+		}
+	}
+	return false
 }
 
 // ============================================================================

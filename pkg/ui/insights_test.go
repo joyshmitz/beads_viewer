@@ -302,6 +302,12 @@ func TestInsightsModelToggleFunctions(t *testing.T) {
 	_ = m.View()
 	m.ToggleCalculation()
 	_ = m.View()
+
+	// Toggle heatmap view (bv-95) - should not panic
+	m.ToggleHeatmap()
+	_ = m.View()
+	m.ToggleHeatmap()
+	_ = m.View()
 }
 
 // TestInsightsModelSetInsights verifies SetInsights updates data

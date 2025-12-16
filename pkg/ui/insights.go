@@ -957,43 +957,6 @@ func (m *InsightsModel) renderPriorityPanel(width, height int, t Theme) string {
 	return panelStyle.Render(sb.String())
 }
 
-// renderHeatmapPanel renders a priority heatmap visualization (bv-95 stub)
-// TODO(bv-95): Implement full heatmap with priority score vs critical-path depth vs due-in
-func (m *InsightsModel) renderHeatmapPanel(width, height int, t Theme) string {
-	info := metricDescriptions[PanelPriority]
-	isFocused := m.focusedPanel == PanelPriority
-
-	borderColor := t.Secondary
-	if isFocused {
-		borderColor = t.Primary
-	}
-
-	panelStyle := t.Renderer.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Width(width).
-		Height(height).
-		Padding(0, 1)
-
-	titleStyle := t.Renderer.NewStyle().Bold(true)
-	if isFocused {
-		titleStyle = titleStyle.Foreground(t.Primary)
-	} else {
-		titleStyle = titleStyle.Foreground(t.Secondary)
-	}
-
-	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(info.Icon + " Priority Heatmap"))
-	sb.WriteString("\n\n")
-
-	emptyStyle := t.Renderer.NewStyle().
-		Foreground(t.Subtext).
-		Italic(true)
-	sb.WriteString(emptyStyle.Render("Heatmap visualization coming soon (bv-95).\nPress 'H' to toggle back to list view."))
-
-	return panelStyle.Render(sb.String())
-}
-
 // renderMiniBar renders a compact progress bar for metric visualization (bv-93)
 // label: 2-char label (e.g., "PR", "BW", "TI")
 // value: normalized 0.0-1.0
@@ -1173,6 +1136,187 @@ func (m *InsightsModel) renderPriorityItem(pick analysis.TopPick, width, height 
 	}
 
 	return itemStyle.Render(sb.String())
+}
+
+// renderHeatmapPanel renders a priority/depth heatmap visualization (bv-95)
+// Maps priority score (X) vs critical-path depth (Y) with color for urgency
+func (m *InsightsModel) renderHeatmapPanel(width, height int, t Theme) string {
+	isFocused := m.focusedPanel == PanelPriority
+
+	borderColor := t.Secondary
+	if isFocused {
+		borderColor = t.Primary
+	}
+
+	panelStyle := t.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Width(width).
+		Height(height).
+		Padding(0, 1)
+
+	var sb strings.Builder
+
+	// Header
+	titleStyle := t.Renderer.NewStyle().Bold(true)
+	if isFocused {
+		titleStyle = titleStyle.Foreground(t.Primary)
+	} else {
+		titleStyle = titleStyle.Foreground(t.Secondary)
+	}
+	sb.WriteString(titleStyle.Render("📊 Priority Heatmap"))
+	sb.WriteString("  ")
+	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext).Italic(true)
+	sb.WriteString(subtitleStyle.Render("Score vs Depth (H=toggle view)"))
+	sb.WriteString("\n")
+
+	if m.insights.Stats == nil || len(m.topPicks) == 0 {
+		emptyStyle := t.Renderer.NewStyle().
+			Foreground(t.Subtext).
+			Italic(true)
+		sb.WriteString(emptyStyle.Render("No data available. Run 'bv --robot-triage' to generate."))
+		return panelStyle.Render(sb.String())
+	}
+
+	// Build heatmap data: count issues in each (depth, score) bucket
+	// Depth buckets: 0, 1-2, 3-5, 6-10, 10+
+	// Score buckets: 0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0
+	depthLabels := []string{"D=0", "D1-2", "D3-5", "D6-10", "D10+"}
+	scoreLabels := []string{"0-.2", ".2-.4", ".4-.6", ".6-.8", ".8-1"}
+
+	// Grid: [depth_bucket][score_bucket] = count
+	grid := make([][]int, len(depthLabels))
+	for i := range grid {
+		grid[i] = make([]int, len(scoreLabels))
+	}
+	// Track urgency per cell (average due-in days, lower = more urgent)
+	urgencyGrid := make([][]float64, len(depthLabels))
+	urgencyCount := make([][]int, len(depthLabels))
+	for i := range urgencyGrid {
+		urgencyGrid[i] = make([]float64, len(scoreLabels))
+		urgencyCount[i] = make([]int, len(scoreLabels))
+	}
+
+	stats := m.insights.Stats
+	critPath := stats.CriticalPathScore()
+
+	for _, pick := range m.topPicks {
+		// Determine depth bucket
+		depth := critPath[pick.ID]
+		depthBucket := 0
+		if depth >= 1 && depth <= 2 {
+			depthBucket = 1
+		} else if depth >= 3 && depth <= 5 {
+			depthBucket = 2
+		} else if depth >= 6 && depth <= 10 {
+			depthBucket = 3
+		} else if depth > 10 {
+			depthBucket = 4
+		}
+
+		// Determine score bucket (pick.Score is 0-1)
+		scoreBucket := int(pick.Score * 5)
+		if scoreBucket > 4 {
+			scoreBucket = 4
+		}
+
+		grid[depthBucket][scoreBucket]++
+
+		// Track urgency from due date if available
+		if issue := m.issueMap[pick.ID]; issue != nil && issue.DueDate != nil {
+			daysUntilDue := issue.DueDate.Sub(time.Now()).Hours() / 24
+			urgencyGrid[depthBucket][scoreBucket] += daysUntilDue
+			urgencyCount[depthBucket][scoreBucket]++
+		}
+	}
+
+	// Calculate max for normalization
+	maxCount := 1
+	for _, row := range grid {
+		for _, c := range row {
+			if c > maxCount {
+				maxCount = c
+			}
+		}
+	}
+
+	// Render header row (score labels)
+	cellWidth := (width - 10) / len(scoreLabels)
+	if cellWidth < 6 {
+		cellWidth = 6
+	}
+
+	headerStyle := t.Renderer.NewStyle().Foreground(t.Secondary).Bold(true)
+	sb.WriteString(fmt.Sprintf("%5s │", ""))
+	for _, label := range scoreLabels {
+		sb.WriteString(headerStyle.Render(fmt.Sprintf(" %*s", cellWidth-1, label)))
+	}
+	sb.WriteString("\n")
+
+	// Separator
+	sb.WriteString(fmt.Sprintf("%5s─┼", "─────"))
+	for range scoreLabels {
+		sb.WriteString(strings.Repeat("─", cellWidth))
+	}
+	sb.WriteString("\n")
+
+	// Render each depth row
+	for i, depthLabel := range depthLabels {
+		labelStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
+		sb.WriteString(labelStyle.Render(fmt.Sprintf("%5s", depthLabel)))
+		sb.WriteString(" │")
+
+		for j := range scoreLabels {
+			count := grid[i][j]
+			if count == 0 {
+				// Empty cell
+				sb.WriteString(t.Renderer.NewStyle().Foreground(GradientLow).Render(fmt.Sprintf(" %*s", cellWidth-1, "·")))
+			} else {
+				// Color based on count intensity and urgency
+				intensity := float64(count) / float64(maxCount)
+
+				// Adjust color based on urgency (if we have due date data)
+				color := GetHeatmapColor(intensity)
+				if urgencyCount[i][j] > 0 {
+					avgDays := urgencyGrid[i][j] / float64(urgencyCount[i][j])
+					if avgDays < 7 {
+						color = GradientPeak // Urgent - pink
+					} else if avgDays < 14 {
+						color = GradientHigh // Soon - purple
+					}
+				}
+
+				cellStyle := t.Renderer.NewStyle().
+					Foreground(color).
+					Bold(count >= maxCount/2)
+				// Show count with visual intensity
+				block := "█"
+				if count >= 3 {
+					block = "███"
+				} else if count >= 2 {
+					block = "██"
+				}
+				cellContent := fmt.Sprintf("%s%d", block, count)
+				sb.WriteString(cellStyle.Render(fmt.Sprintf(" %*s", cellWidth-1, cellContent)))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// Legend
+	sb.WriteString("\n")
+	legendStyle := t.Renderer.NewStyle().Foreground(t.Subtext)
+	sb.WriteString(legendStyle.Render("Legend: "))
+	sb.WriteString(t.Renderer.NewStyle().Foreground(GradientLow).Render("· "))
+	sb.WriteString(legendStyle.Render("empty "))
+	sb.WriteString(t.Renderer.NewStyle().Foreground(GradientMid).Render("█ "))
+	sb.WriteString(legendStyle.Render("few "))
+	sb.WriteString(t.Renderer.NewStyle().Foreground(GradientHigh).Render("██ "))
+	sb.WriteString(legendStyle.Render("some "))
+	sb.WriteString(t.Renderer.NewStyle().Foreground(GradientPeak).Render("███ "))
+	sb.WriteString(legendStyle.Render("many/urgent"))
+
+	return panelStyle.Render(sb.String())
 }
 
 func (m *InsightsModel) renderCycleChain(cycle []string, maxWidth int, t Theme) string {

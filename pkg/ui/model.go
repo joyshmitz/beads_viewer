@@ -2112,6 +2112,9 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 	case "x":
 		// Toggle calculation details
 		m.insightsPanel.ToggleCalculation()
+	case "H":
+		// Toggle heatmap view (bv-95)
+		m.insightsPanel.ToggleHeatmap()
 	case "enter":
 		// Jump to selected issue in list view
 		selectedID := m.insightsPanel.SelectedIssueID()

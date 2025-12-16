@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/baseline"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -236,6 +238,15 @@ type Model struct {
 	availableRepos   []string        // List of repo prefixes available
 	activeRepos      map[string]bool // Which repos are currently shown (nil = all)
 	workspaceSummary string          // Summary text for footer (e.g., "3 repos")
+
+	// Alerts panel (bv-168)
+	alerts          []drift.Alert
+	alertsCritical  int
+	alertsWarning   int
+	alertsInfo      int
+	showAlertsPanel bool
+	alertsCursor    int
+	dismissedAlerts map[string]bool
 }
 
 // labelCount is a simple label->count pair for display
@@ -574,6 +585,8 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		statusMsg:           initialStatus,
 		statusIsError:       initialStatusErr,
 		historyLoading:      len(issues) > 0, // Will be loaded in Init()
+		// Alerts panel (bv-168)
+		dismissedAlerts: make(map[string]bool),
 	}
 }
 
@@ -837,6 +850,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Reloaded %d issues", len(newIssues))
 		}
 		m.statusIsError = false
+		// Invalidate label-derived caches
+		m.labelHealthCached = false
+		m.labelDrilldownCache = make(map[string][]model.Issue)
 		m.updateViewportContent()
 
 		// Re-start watching for next change + wait for Phase 2
@@ -869,15 +885,95 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Close label drilldown modal if open
+		// Handle label drilldown modal if open
 		if m.showLabelDrilldown {
 			s := msg.String()
-			if s == "esc" || s == "q" || s == "enter" || s == "d" {
+			switch s {
+			case "enter":
+				// Apply label filter to main list and close drilldown
+				if m.labelDrilldownLabel != "" {
+					m.currentFilter = "label:" + m.labelDrilldownLabel
+					m.applyFilter()
+					m.focused = focusList
+				}
+				m.showLabelDrilldown = false
+				m.labelDrilldownLabel = ""
+				m.labelDrilldownIssues = nil
+				return m, nil
+			case "esc", "q", "d":
 				m.showLabelDrilldown = false
 				m.labelDrilldownLabel = ""
 				m.labelDrilldownIssues = nil
 				return m, nil
 			}
+		}
+
+		// Handle alerts panel modal if open (bv-168)
+		if m.showAlertsPanel {
+			// Build list of active (non-dismissed) alerts
+			var activeAlerts []drift.Alert
+			for _, a := range m.alerts {
+				if !m.dismissedAlerts[alertKey(a)] {
+					activeAlerts = append(activeAlerts, a)
+				}
+			}
+			s := msg.String()
+			switch s {
+			case "j", "down":
+				if m.alertsCursor < len(activeAlerts)-1 {
+					m.alertsCursor++
+				}
+				return m, nil
+			case "k", "up":
+				if m.alertsCursor > 0 {
+					m.alertsCursor--
+				}
+				return m, nil
+			case "enter":
+				// Jump to the issue referenced by the selected alert
+				if m.alertsCursor < len(activeAlerts) {
+					issueID := activeAlerts[m.alertsCursor].IssueID
+					if issueID != "" {
+						// Find the issue in the list and select it
+						for i, item := range m.list.Items() {
+							if it, ok := item.(IssueItem); ok && it.Issue.ID == issueID {
+								m.list.Select(i)
+								m.showAlertsPanel = false
+								return m, nil
+							}
+						}
+					}
+				}
+				return m, nil
+			case "d":
+				// Dismiss the selected alert
+				if m.alertsCursor < len(activeAlerts) {
+					key := alertKey(activeAlerts[m.alertsCursor])
+					m.dismissedAlerts[key] = true
+					// Adjust cursor if needed
+					remaining := 0
+					for _, a := range m.alerts {
+						if !m.dismissedAlerts[alertKey(a)] {
+							remaining++
+						}
+					}
+					if m.alertsCursor >= remaining {
+						m.alertsCursor = remaining - 1
+					}
+					if m.alertsCursor < 0 {
+						m.alertsCursor = 0
+					}
+					// Close panel if no alerts left
+					if remaining == 0 {
+						m.showAlertsPanel = false
+					}
+				}
+				return m, nil
+			case "esc", "q", "!":
+				m.showAlertsPanel = false
+				return m, nil
+			}
+			return m, nil
 		}
 
 		// Handle quit confirmation first
@@ -1141,6 +1237,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					panelHeight = 3
 				}
 				m.insightsPanel.SetSize(m.width, panelHeight)
+				return m, nil
+
+			case "!":
+				// Toggle alerts panel (bv-168)
+				// Only show if there are active alerts
+				activeCount := 0
+				for _, a := range m.alerts {
+					if !m.dismissedAlerts[alertKey(a)] {
+						activeCount++
+					}
+				}
+				if activeCount > 0 {
+					m.showAlertsPanel = !m.showAlertsPanel
+					m.alertsCursor = 0 // Reset cursor when opening
+				} else {
+					m.statusMsg = "No active alerts"
+					m.statusIsError = false
+				}
 				return m, nil
 
 			case "R":
@@ -1736,6 +1850,8 @@ func (m Model) View() string {
 		body = m.renderLabelHealthDetail(*m.labelHealthDetail)
 	} else if m.showLabelDrilldown && m.labelDrilldownLabel != "" {
 		body = m.renderLabelDrilldown()
+	} else if m.showAlertsPanel {
+		body = m.renderAlertsPanel()
 	} else if m.showTimeTravelPrompt {
 		body = m.renderTimeTravelPrompt()
 	} else if m.showRecipePicker {
@@ -2465,26 +2581,34 @@ func (m *Model) renderFooter() string {
 	// ─────────────────────────────────────────────────────────────────────────
 	var filterTxt string
 	var filterIcon string
-	switch m.currentFilter {
-	case "all":
-		filterTxt = "ALL"
-		filterIcon = "📋"
-	case "open":
-		filterTxt = "OPEN"
-		filterIcon = "📂"
-	case "closed":
-		filterTxt = "CLOSED"
-		filterIcon = "✅"
-	case "ready":
-		filterTxt = "READY"
-		filterIcon = "🚀"
-	default:
-		if strings.HasPrefix(m.currentFilter, "recipe:") {
-			filterTxt = strings.ToUpper(m.currentFilter[7:])
-			filterIcon = "📑"
-		} else {
-			filterTxt = m.currentFilter
-			filterIcon = "🔍"
+	if m.focused == focusLabelDashboard {
+		filterTxt = "LABELS: j/k nav • h detail • d drilldown • enter filter"
+		filterIcon = "🏷️"
+	} else if m.showLabelDrilldown && m.labelDrilldownLabel != "" {
+		filterTxt = fmt.Sprintf("LABEL %s: enter filter • esc/q/d close", m.labelDrilldownLabel)
+		filterIcon = "🏷️"
+	} else {
+		switch m.currentFilter {
+		case "all":
+			filterTxt = "ALL"
+			filterIcon = "📋"
+		case "open":
+			filterTxt = "OPEN"
+			filterIcon = "📂"
+		case "closed":
+			filterTxt = "CLOSED"
+			filterIcon = "✅"
+		case "ready":
+			filterTxt = "READY"
+			filterIcon = "🚀"
+		default:
+			if strings.HasPrefix(m.currentFilter, "recipe:") {
+				filterTxt = strings.ToUpper(m.currentFilter[7:])
+				filterIcon = "📑"
+			} else {
+				filterTxt = m.currentFilter
+				filterIcon = "🔍"
+			}
 		}
 	}
 
@@ -2548,6 +2672,52 @@ func (m *Model) renderFooter() string {
 			Bold(true).
 			Padding(0, 1)
 		updateSection = updateStyle.Render(fmt.Sprintf("⭐ %s", m.updateTag))
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// ALERTS BADGE - Project health alerts (bv-168)
+	// ─────────────────────────────────────────────────────────────────────────
+	alertsSection := ""
+	// Count active (non-dismissed) alerts
+	activeAlerts := 0
+	activeCritical := 0
+	activeWarning := 0
+	for _, a := range m.alerts {
+		if !m.dismissedAlerts[alertKey(a)] {
+			activeAlerts++
+			switch a.Severity {
+			case drift.SeverityCritical:
+				activeCritical++
+			case drift.SeverityWarning:
+				activeWarning++
+			}
+		}
+	}
+	if activeAlerts > 0 {
+		var alertStyle lipgloss.Style
+		var alertIcon string
+		if activeCritical > 0 {
+			alertStyle = lipgloss.NewStyle().
+				Background(ColorPrioCriticalBg).
+				Foreground(ColorPrioCritical).
+				Bold(true).
+				Padding(0, 1)
+			alertIcon = "⚠"
+		} else if activeWarning > 0 {
+			alertStyle = lipgloss.NewStyle().
+				Background(ColorPrioHighBg).
+				Foreground(ColorWarning).
+				Bold(true).
+				Padding(0, 1)
+			alertIcon = "⚡"
+		} else {
+			alertStyle = lipgloss.NewStyle().
+				Background(ColorBgHighlight).
+				Foreground(ColorInfo).
+				Padding(0, 1)
+			alertIcon = "ℹ"
+		}
+		alertsSection = alertStyle.Render(fmt.Sprintf("%s %d alerts (!)", alertIcon, activeAlerts))
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -2622,6 +2792,9 @@ func (m *Model) renderFooter() string {
 	// ASSEMBLE FOOTER with proper spacing
 	// ─────────────────────────────────────────────────────────────────────────
 	leftWidth := lipgloss.Width(filterBadge) + lipgloss.Width(statsSection)
+	if alertsSection != "" {
+		leftWidth += lipgloss.Width(alertsSection) + 1
+	}
 	if updateSection != "" {
 		leftWidth += lipgloss.Width(updateSection) + 1
 	}
@@ -2639,6 +2812,9 @@ func (m *Model) renderFooter() string {
 	// Build the footer
 	var parts []string
 	parts = append(parts, filterBadge, labelHint)
+	if alertsSection != "" {
+		parts = append(parts, alertsSection)
+	}
 	if workspaceSection != "" {
 		parts = append(parts, workspaceSection)
 	}
@@ -2835,11 +3011,11 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 			case "updated", "updated_at":
 				less = iItem.Issue.UpdatedAt.Before(jItem.Issue.UpdatedAt)
 			case "impact":
-				less = iItem.Impact < jItem.Impact
+				// Use analysis map for sort
+				less = m.analysis.GetCriticalPathScore(iItem.Issue.ID) < m.analysis.GetCriticalPathScore(jItem.Issue.ID)
 			case "pagerank":
-				less = iItem.GraphScore < jItem.GraphScore
-			case "triage":
-				less = iItem.TriageScore < jItem.TriageScore
+				// Use analysis map for sort
+				less = m.analysis.GetPageRankScore(iItem.Issue.ID) < m.analysis.GetPageRankScore(jItem.Issue.ID)
 			default:
 				less = iItem.Issue.Priority < jItem.Issue.Priority
 			}
@@ -3570,4 +3746,189 @@ func (m *Model) Stop() {
 	if m.watcher != nil {
 		m.watcher.Stop()
 	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ALERTS PANEL (bv-168)
+// ════════════════════════════════════════════════════════════════════════════
+
+// computeAlerts calculates drift alerts for the current issues
+func computeAlerts(issues []model.Issue) ([]drift.Alert, int, int, int) {
+	if len(issues) == 0 {
+		return nil, 0, 0, 0
+	}
+
+	// Load drift config
+	projectDir, _ := os.Getwd()
+	driftConfig, err := drift.LoadConfig(projectDir)
+	if err != nil {
+		driftConfig = drift.DefaultConfig()
+	}
+
+	// Build stats for drift calculator
+	analyzer := analysis.NewAnalyzer(issues)
+	stats := analyzer.Analyze()
+
+	openCount, closedCount, blockedCount := 0, 0, 0
+	for _, issue := range issues {
+		switch issue.Status {
+		case model.StatusClosed:
+			closedCount++
+		case model.StatusBlocked:
+			blockedCount++
+		default:
+			openCount++
+		}
+	}
+
+	curStats := baseline.GraphStats{
+		NodeCount:       stats.NodeCount,
+		EdgeCount:       stats.EdgeCount,
+		Density:         stats.Density,
+		OpenCount:       openCount,
+		ClosedCount:     closedCount,
+		BlockedCount:    blockedCount,
+		CycleCount:      len(stats.Cycles()),
+		ActionableCount: len(analyzer.GetActionableIssues()),
+	}
+
+	bl := &baseline.Baseline{Stats: curStats}
+	cur := &baseline.Baseline{Stats: curStats, Cycles: stats.Cycles()}
+
+	calc := drift.NewCalculator(bl, cur, driftConfig)
+	calc.SetIssues(issues)
+	result := calc.Calculate()
+
+	// Count by severity
+	critical, warning, info := 0, 0, 0
+	for _, a := range result.Alerts {
+		switch a.Severity {
+		case drift.SeverityCritical:
+			critical++
+		case drift.SeverityWarning:
+			warning++
+		case drift.SeverityInfo:
+			info++
+		}
+	}
+
+	return result.Alerts, critical, warning, info
+}
+
+// alertKey generates a unique key for an alert (for dismissal tracking)
+func alertKey(a drift.Alert) string {
+	return fmt.Sprintf("%s:%s:%s", a.Type, a.Severity, a.IssueID)
+}
+
+// renderAlertsPanel renders the alerts overlay panel
+func (m Model) renderAlertsPanel() string {
+	t := m.theme
+
+	boxStyle := t.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Primary).
+		Padding(1, 2).
+		Width(min(80, m.width-4)).
+		MaxHeight(m.height - 4)
+
+	titleStyle := t.Renderer.NewStyle().
+		Bold(true).
+		Foreground(t.Primary).
+		MarginBottom(1)
+
+	// Filter out dismissed alerts
+	var visibleAlerts []drift.Alert
+	for _, a := range m.alerts {
+		if !m.dismissedAlerts[alertKey(a)] {
+			visibleAlerts = append(visibleAlerts, a)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render("🔔 Alerts Panel"))
+	sb.WriteString("\n\n")
+
+	if len(visibleAlerts) == 0 {
+		sb.WriteString(t.Renderer.NewStyle().Foreground(ColorSuccess).Render("✓ No active alerts"))
+		sb.WriteString("\n\n")
+	} else {
+		// Summary line
+		summaryStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
+		summary := fmt.Sprintf("%d total", len(visibleAlerts))
+		if m.alertsCritical > 0 {
+			summary += fmt.Sprintf(" • %d critical", m.alertsCritical)
+		}
+		if m.alertsWarning > 0 {
+			summary += fmt.Sprintf(" • %d warning", m.alertsWarning)
+		}
+		if m.alertsInfo > 0 {
+			summary += fmt.Sprintf(" • %d info", m.alertsInfo)
+		}
+		sb.WriteString(summaryStyle.Render(summary))
+		sb.WriteString("\n\n")
+
+		// Render each alert
+		for i, a := range visibleAlerts {
+			selected := i == m.alertsCursor
+
+			// Severity indicator
+			var severityStyle lipgloss.Style
+			var severityIcon string
+			switch a.Severity {
+			case drift.SeverityCritical:
+				severityStyle = t.Renderer.NewStyle().Foreground(t.Blocked).Bold(true)
+				severityIcon = "🔴"
+			case drift.SeverityWarning:
+				severityStyle = t.Renderer.NewStyle().Foreground(t.Feature)
+				severityIcon = "🟡"
+			default:
+				severityStyle = t.Renderer.NewStyle().Foreground(t.Secondary)
+				severityIcon = "🔵"
+			}
+
+			// Cursor indicator
+			cursor := "  "
+			if selected {
+				cursor = "▸ "
+			}
+
+			// Alert line
+			line := fmt.Sprintf("%s%s %s", cursor, severityIcon, a.Message)
+			if selected {
+				line = t.Renderer.NewStyle().Bold(true).Render(line)
+			}
+			sb.WriteString(severityStyle.Render(line))
+			sb.WriteString("\n")
+
+			// Show issue ID if available and selected
+			if selected && a.IssueID != "" {
+				issueHint := t.Renderer.NewStyle().Foreground(t.Muted).Italic(true).Render(
+					fmt.Sprintf("     Issue: %s (press Enter to jump)", a.IssueID))
+				sb.WriteString(issueHint)
+				sb.WriteString("\n")
+			}
+
+			// Show unblocks info for blocking cascade alerts
+			if selected && a.UnblocksCount > 0 {
+				unblockHint := t.Renderer.NewStyle().Foreground(t.Open).Render(
+					fmt.Sprintf("     Unblocks %d items (priority sum: %d)", a.UnblocksCount, a.DownstreamPrioritySum))
+				sb.WriteString(unblockHint)
+				sb.WriteString("\n")
+			}
+		}
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(t.Renderer.NewStyle().Foreground(t.Muted).Italic(true).Render(
+		"j/k: navigate • Enter: jump to issue • d: dismiss • Esc: close"))
+
+	content := boxStyle.Render(sb.String())
+
+	return lipgloss.Place(
+		m.width,
+		m.height-1,
+		lipgloss.Center,
+		lipgloss.Center,
+		content,
+	)
 }

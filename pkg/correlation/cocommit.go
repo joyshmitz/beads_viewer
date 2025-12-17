@@ -304,15 +304,39 @@ func (c *CoCommitExtractor) generateReason(event BeadEvent, files []FileChange, 
 
 // isCodeFile checks if a file path is a code file based on extension
 func isCodeFile(path string) bool {
+	// Handle git quoting (e.g. "path/with spaces.go")
+	if len(path) > 2 && path[0] == '"' && path[len(path)-1] == '"' {
+		// Basic unquote: strip quotes.
+		// Git might use C-style escapes (e.g. \t, \n, \"), but for extension checking
+		// simply stripping the surrounding quotes handles the common case of spaces.
+		// For complex escapes, we accept that filepath.Ext might be imperfect,
+		// but this covers 99% of "filename with space.go" cases.
+		path = path[1 : len(path)-1]
+	}
+
 	ext := strings.ToLower(filepath.Ext(path))
 	return codeFileExtensions[ext]
 }
 
 // isExcludedPath checks if a path should be excluded
 func isExcludedPath(path string) bool {
+	// Check for direct prefix (fast path for root dirs)
 	for _, prefix := range excludedPaths {
 		if strings.HasPrefix(path, prefix) {
 			return true
+		}
+	}
+
+	// Check for nested directories (e.g. src/node_modules/...)
+	// We look for "/dirname/" in the path
+	for _, prefix := range excludedPaths {
+		// Only check directory exclusions (ending in /)
+		if strings.HasSuffix(prefix, "/") {
+			// Check for "/prefix" anywhere in path
+			// We prepend / to ensure we match a directory boundary
+			if strings.Contains(path, "/"+prefix) {
+				return true
+			}
 		}
 	}
 	return false

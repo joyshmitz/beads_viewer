@@ -100,6 +100,16 @@ func (e *Extractor) Extract(opts ExtractOptions) ([]BeadEvent, error) {
 	// Parse output stream
 	events, parseErr := e.parseGitLogOutput(stdout, opts.BeadID)
 
+	// If parsing failed, ensure we drain the pipe or kill the process to avoid deadlock
+	// where git log is blocked writing to full pipe while we wait for it to exit.
+	if parseErr != nil {
+		// Try to kill the process to unblock the write
+		_ = cmd.Process.Kill()
+		// We still need to wait to clean up zombies, but now it should exit quickly
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("parsing git log output: %w", parseErr)
+	}
+
 	if err := cmd.Wait(); err != nil {
 		// If git log failed (non-zero exit), prefer that error unless we have a parsing error
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -137,6 +147,17 @@ func (e *Extractor) buildGitLogArgs(opts ExtractOptions) []string {
 	}
 	if opts.Limit > 0 {
 		args = insertBefore(args, "--", fmt.Sprintf("-n%d", opts.Limit))
+	}
+
+	// Optimization: If filtering by BeadID, tell git to only show commits
+	// where this ID appears in the diff (added or removed).
+	// We use -G with a regex to match the JSON field to avoid false positives on common IDs like "1".
+	// Regex matches: "id": [whitespace] "BEAD_ID"
+	if opts.BeadID != "" {
+		// Escape regex meta-characters in BeadID just in case
+		safeID := regexp.QuoteMeta(opts.BeadID)
+		regex := fmt.Sprintf(`"id":\s*"%s"`, safeID)
+		args = insertBefore(args, "--", fmt.Sprintf("-G%s", regex))
 	}
 
 	// Use primary beads file for follow support (git requires single pathspec with --follow)

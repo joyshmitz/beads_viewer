@@ -2465,12 +2465,13 @@ func main() {
 		}
 
 		// Build burndown data
-		burndown := calculateBurndown(targetSprint, issues)
+		now := time.Now()
+		burndown := calculateBurndownAt(targetSprint, issues, now)
 		issueMap := make(map[string]model.Issue, len(issues))
 		for _, iss := range issues {
 			issueMap[iss.ID] = iss
 		}
-		if scopeChanges, err := computeSprintScopeChanges(cwd, targetSprint, issueMap, time.Now()); err == nil && len(scopeChanges) > 0 {
+		if scopeChanges, err := computeSprintScopeChanges(cwd, targetSprint, issueMap, now); err == nil && len(scopeChanges) > 0 {
 			burndown.ScopeChanges = scopeChanges
 		}
 
@@ -4161,6 +4162,7 @@ type sprintSnapshot struct {
 }
 
 type scopeCommit struct {
+	sha       string
 	timestamp time.Time
 	events    []ScopeChangeEvent
 }
@@ -4188,7 +4190,8 @@ func computeSprintScopeChanges(repoPath string, sprint *model.Sprint, issueMap m
 		"-c", "color.ui=false",
 		"log",
 		"-p",
-		"--format=%H%x00%aI",
+		"-U0",
+		"--format=%H%x00%cI",
 		fmt.Sprintf("--since=%s", since.Format(time.RFC3339)),
 		fmt.Sprintf("--until=%s", until.Format(time.RFC3339)),
 		"--",
@@ -4204,6 +4207,7 @@ func computeSprintScopeChanges(repoPath string, sprint *model.Sprint, issueMap m
 
 	var commits []scopeCommit
 	var currentTS time.Time
+	var currentSHA string
 	var haveCommit bool
 	var oldSnap, newSnap sprintSnapshot
 	var haveOld, haveNew bool
@@ -4250,6 +4254,7 @@ func computeSprintScopeChanges(repoPath string, sprint *model.Sprint, issueMap m
 			}
 
 			commits = append(commits, scopeCommit{
+				sha:       currentSHA,
 				timestamp: currentTS.UTC(),
 				events:    events,
 			})
@@ -4264,11 +4269,11 @@ func computeSprintScopeChanges(repoPath string, sprint *model.Sprint, issueMap m
 		line := scanner.Text()
 
 		sha, ts, ok := parseGitHeaderLine(line)
-		_ = sha // not currently used, but parsing validates header lines
 		if ok {
 			processCommit()
 
 			currentTS = ts
+			currentSHA = sha
 			haveCommit = true
 			oldSnap, newSnap = sprintSnapshot{}, sprintSnapshot{}
 			haveOld, haveNew = false, false
@@ -4303,10 +4308,13 @@ func computeSprintScopeChanges(repoPath string, sprint *model.Sprint, issueMap m
 		return nil, nil
 	}
 
-	// git log returns newest first; output should be chronological.
-	for i, j := 0, len(commits)-1; i < j; i, j = i+1, j-1 {
-		commits[i], commits[j] = commits[j], commits[i]
-	}
+	// Ensure stable chronological output regardless of git log ordering nuances.
+	sort.Slice(commits, func(i, j int) bool {
+		if !commits[i].timestamp.Equal(commits[j].timestamp) {
+			return commits[i].timestamp.Before(commits[j].timestamp)
+		}
+		return commits[i].sha < commits[j].sha
+	})
 
 	var scopeChanges []ScopeChangeEvent
 	for _, c := range commits {

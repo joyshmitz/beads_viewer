@@ -5,6 +5,7 @@ package agents
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -107,12 +108,18 @@ var legacyBlurbStartPattern = regexp.MustCompile(`(?m)^#{2,3}\s*Using bv as an A
 // legacyBlurbEndPattern matches content near the end of the legacy blurb.
 var legacyBlurbEndPattern = regexp.MustCompile(`(?m)bv already computes the hard parts[^\n]*\n*` + "```" + `?\n*`)
 
+// legacyBlurbNextSectionPattern matches the start of a new section after the legacy blurb.
+// Used as fallback when the end pattern isn't found.
+var legacyBlurbNextSectionPattern = regexp.MustCompile(`(?m)^#{1,2}\s+[^#]`)
+
 // ContainsBlurb checks if the content already contains a beads_viewer agent blurb.
 func ContainsBlurb(content string) bool {
 	return strings.Contains(content, "<!-- bv-agent-instructions-v")
 }
 
 // ContainsLegacyBlurb checks if the content contains the old-format blurb (pre-v1, no HTML markers).
+// Requires all 4 legacy patterns to match to avoid false positives on content that
+// merely references robot flags (like the current AGENTS.md documentation).
 func ContainsLegacyBlurb(content string) bool {
 	if !legacyBlurbStartPattern.MatchString(content) {
 		return false
@@ -123,7 +130,9 @@ func ContainsLegacyBlurb(content string) bool {
 			matchCount++
 		}
 	}
-	return matchCount >= 3
+	// Require all patterns - the key differentiator is "bv already computes the hard parts"
+	// which only appears in the legacy blurb, not in current documentation
+	return matchCount == len(LegacyBlurbPatterns)
 }
 
 // ContainsAnyBlurb checks if the content contains either the current or legacy blurb format.
@@ -137,10 +146,9 @@ func GetBlurbVersion(content string) int {
 	if len(matches) < 2 {
 		return 0
 	}
-	var version int
-	_, _ = strings.NewReader(matches[1]).Read(make([]byte, 1))
-	if matches[1] == "1" {
-		version = 1
+	version, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0
 	}
 	return version
 }
@@ -202,8 +210,8 @@ func RemoveLegacyBlurb(content string) string {
 	if endLoc != nil {
 		endIdx = startIdx + endLoc[1]
 	} else {
-		nextSection := regexp.MustCompile(`(?m)^#{1,2}\s+[^#]`)
-		nextLoc := nextSection.FindStringIndex(content[startIdx+10:])
+		// Fallback: find the next major section heading
+		nextLoc := legacyBlurbNextSectionPattern.FindStringIndex(content[startIdx+10:])
 		if nextLoc != nil {
 			endIdx = startIdx + 10 + nextLoc[0]
 		} else {

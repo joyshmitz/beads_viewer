@@ -59,6 +59,16 @@ func TestGetBlurbVersion(t *testing.T) {
 			content:  "<!-- bv-agent-instructions-v1 -->",
 			expected: 1,
 		},
+		{
+			name:     "version 2 (future)",
+			content:  "<!-- bv-agent-instructions-v2 -->",
+			expected: 2,
+		},
+		{
+			name:     "version 10 (multi-digit)",
+			content:  "<!-- bv-agent-instructions-v10 -->",
+			expected: 10,
+		},
 	}
 
 	for _, tt := range tests {

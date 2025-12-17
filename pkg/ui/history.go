@@ -1311,8 +1311,20 @@ func (h *HistoryModel) renderBeadLine(idx int, hist correlation.BeadHistory, wid
 	// Commit count
 	commitCount := fmt.Sprintf("%d commits", len(hist.Commits))
 
+	// Event count badge (bv-7k8p) - shows lifecycle events if any
+	eventBadge := ""
+	if len(hist.Events) > 0 {
+		eventBadge = renderCompactEventBadge(len(hist.Events), t)
+	}
+
+	// Calculate space for event badge
+	eventBadgeWidth := lipgloss.Width(eventBadge)
+	if eventBadgeWidth > 0 {
+		eventBadgeWidth += 1 // Space before badge
+	}
+
 	// Truncate title
-	maxTitleLen := width - len(indicator) - len(statusIcon) - len(commitCount) - 6
+	maxTitleLen := width - len(indicator) - len(statusIcon) - len(commitCount) - eventBadgeWidth - 6
 	if maxTitleLen < 10 {
 		maxTitleLen = 10
 	}
@@ -1331,12 +1343,18 @@ func (h *HistoryModel) renderBeadLine(idx int, hist correlation.BeadHistory, wid
 		titleStyle = titleStyle.Bold(true)
 	}
 
+	// Include event badge if present
+	countPart := countStyle.Render(commitCount)
+	if eventBadge != "" {
+		countPart = countPart + " " + eventBadge
+	}
+
 	line := fmt.Sprintf("%s%s %s %s %s",
 		indicator,
 		statusIcon,
 		idStyle.Render(hist.BeadID),
 		titleStyle.Render(title),
-		countStyle.Render(commitCount),
+		countPart,
 	)
 
 	return line
@@ -1393,6 +1411,16 @@ func (h *HistoryModel) renderDetailPanel(width, height int) string {
 		detailSepWidth = 1
 	}
 	lines = append(lines, strings.Repeat("─", detailSepWidth))
+
+	// === LIFECYCLE EVENTS SECTION (bv-7k8p) ===
+	// Show compact timeline of lifecycle events if available
+	if len(hist.Events) > 0 {
+		// Limit events section to ~4 lines to leave room for commits
+		maxEventLines := 5
+		eventLines := h.renderEventsSection(hist.Events, width-4, maxEventLines)
+		lines = append(lines, eventLines...)
+		lines = append(lines, "") // Spacer before commits
+	}
 
 	// Calculate aggregate stats for footer (bv-9fk1)
 	var totalFiles, totalAdd, totalDel int
@@ -1907,6 +1935,151 @@ func fileActionIcon(action string) string {
 	default:
 		return "?"
 	}
+}
+
+// === Lifecycle Event Helpers (bv-7k8p) ===
+
+// eventTypeIcon returns an icon for a lifecycle event type
+func eventTypeIcon(et correlation.EventType) string {
+	switch et {
+	case correlation.EventCreated:
+		return "🆕"
+	case correlation.EventClaimed:
+		return "👤"
+	case correlation.EventClosed:
+		return "✓"
+	case correlation.EventReopened:
+		return "↺"
+	case correlation.EventModified:
+		return "✎"
+	default:
+		return "•"
+	}
+}
+
+// eventTypeColor returns the appropriate theme color for an event type
+func eventTypeColor(et correlation.EventType, t Theme) lipgloss.TerminalColor {
+	switch et {
+	case correlation.EventCreated:
+		return t.Primary // new items get primary highlight
+	case correlation.EventClaimed:
+		return t.InProgress // claimed = in progress
+	case correlation.EventClosed:
+		return t.Open // closed = success/green
+	case correlation.EventReopened:
+		return t.Secondary // reopened = warning
+	case correlation.EventModified:
+		return t.Muted // modifications are low-key
+	default:
+		return t.Muted
+	}
+}
+
+// eventTypeLabel returns a human-readable label for an event type
+func eventTypeLabel(et correlation.EventType) string {
+	switch et {
+	case correlation.EventCreated:
+		return "Created"
+	case correlation.EventClaimed:
+		return "Claimed"
+	case correlation.EventClosed:
+		return "Closed"
+	case correlation.EventReopened:
+		return "Reopened"
+	case correlation.EventModified:
+		return "Modified"
+	default:
+		return string(et)
+	}
+}
+
+// renderEventsSection renders a compact timeline of lifecycle events (bv-7k8p)
+func (h *HistoryModel) renderEventsSection(events []correlation.BeadEvent, width int, maxLines int) []string {
+	if len(events) == 0 {
+		return nil
+	}
+
+	t := h.theme
+	var lines []string
+
+	// Section header
+	headerStyle := t.Renderer.NewStyle().
+		Foreground(t.Secondary).
+		Bold(true)
+	lines = append(lines, headerStyle.Render(fmt.Sprintf("LIFECYCLE (%d)", len(events))))
+
+	// Timeline style
+	timeStyle := t.Renderer.NewStyle().Foreground(t.Muted).Width(8)
+	authorStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
+
+	// Show most recent events first (reverse chronological for timeline)
+	displayed := 0
+	for i := len(events) - 1; i >= 0 && displayed < maxLines-1; i-- {
+		event := events[i]
+
+		// Event icon with color
+		icon := eventTypeIcon(event.EventType)
+		iconColor := eventTypeColor(event.EventType, t)
+		iconStyle := t.Renderer.NewStyle().Foreground(iconColor)
+		coloredIcon := iconStyle.Render(icon)
+
+		// Relative time
+		timeStr := relativeTime(event.Timestamp)
+		if len(timeStr) > 7 {
+			timeStr = timeStr[:7]
+		}
+
+		// Author initials
+		initials := authorInitials(event.Author)
+
+		// Build event line: "│ ✓ 2d ago JD"
+		// Use unicode box drawing for timeline
+		connector := "│"
+		if i == 0 {
+			connector = "└" // Last event (first chronologically)
+		}
+
+		eventLine := fmt.Sprintf("%s %s %s %s",
+			connector,
+			coloredIcon,
+			timeStyle.Render(timeStr),
+			authorStyle.Render(initials),
+		)
+
+		// Truncate if needed
+		if lipgloss.Width(eventLine) > width-2 {
+			// Simplified version without author
+			eventLine = fmt.Sprintf("%s %s %s",
+				connector,
+				coloredIcon,
+				timeStyle.Render(timeStr),
+			)
+		}
+
+		lines = append(lines, eventLine)
+		displayed++
+	}
+
+	// If more events exist than displayed, show count
+	if len(events) > maxLines-1 {
+		remaining := len(events) - (maxLines - 1)
+		moreStyle := t.Renderer.NewStyle().Foreground(t.Muted).Italic(true)
+		lines = append(lines, moreStyle.Render(fmt.Sprintf("  +%d more", remaining)))
+	}
+
+	return lines
+}
+
+// renderCompactEventBadge renders a compact event count badge for list items (bv-7k8p)
+func renderCompactEventBadge(eventCount int, t Theme) string {
+	if eventCount == 0 {
+		return ""
+	}
+
+	badgeStyle := t.Renderer.NewStyle().
+		Foreground(t.Secondary)
+
+	return badgeStyle.Render(fmt.Sprintf("⚡%d", eventCount))
 }
 
 // Git Mode rendering functions (bv-tl3n)

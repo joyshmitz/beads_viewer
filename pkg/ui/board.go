@@ -24,11 +24,29 @@ type BoardModel struct {
 	// Reverse dependency index: maps issue ID -> slice of issue IDs it blocks (bv-1daf)
 	blocksIndex map[string][]string
 
+	// Issue lookup map: ID -> *Issue for getting blocker titles (bv-kklp)
+	issueMap map[string]*model.Issue
+
 	// Detail panel (bv-r6kh)
 	showDetail   bool
 	detailVP     viewport.Model
 	mdRenderer   *glamour.TermRenderer
 	lastDetailID string // Track which issue detail is currently rendered
+
+	// Search state (bv-yg39)
+	searchMode    bool
+	searchQuery   string
+	searchMatches []searchMatch // Cards matching current query
+	searchCursor  int           // Current match index
+
+	// Vim key combo tracking (bv-yg39)
+	waitingForG bool // True if we're waiting for second 'g' in 'gg' combo
+}
+
+// searchMatch holds info about a matching card (bv-yg39)
+type searchMatch struct {
+	col int // Column index (0-3)
+	row int // Row index within column
 }
 
 // Column indices for the Kanban board
@@ -115,11 +133,18 @@ func NewBoardModel(issues []model.Issue, theme Theme) BoardModel {
 		glamour.WithWordWrap(60),
 	)
 
+	// Build issue lookup map for getting blocker titles (bv-kklp)
+	issueMap := make(map[string]*model.Issue, len(issues))
+	for i := range issues {
+		issueMap[issues[i].ID] = &issues[i]
+	}
+
 	b := BoardModel{
 		columns:     cols,
 		focusedCol:  0,
 		theme:       theme,
 		blocksIndex: buildBlocksIndex(issues),
+		issueMap:    issueMap,
 		detailVP:    viewport.New(40, 20),
 		mdRenderer:  mdRenderer,
 	}
@@ -151,6 +176,12 @@ func (b *BoardModel) SetIssues(issues []model.Issue) {
 
 	b.columns = cols
 	b.blocksIndex = buildBlocksIndex(issues) // Rebuild reverse dependency index (bv-1daf)
+
+	// Rebuild issue lookup map for blocker titles (bv-kklp)
+	b.issueMap = make(map[string]*model.Issue, len(issues))
+	for i := range issues {
+		b.issueMap[issues[i].ID] = &issues[i]
+	}
 
 	// Sanitize selection to prevent out-of-bounds
 	for i := 0; i < 4; i++ {
@@ -238,6 +269,197 @@ func (b *BoardModel) PageUp(visibleRows int) {
 		newRow = 0
 	}
 	b.selectedRow[col] = newRow
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Enhanced Navigation (bv-yg39)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// JumpToColumn jumps directly to a specific column (1-4 maps to 0-3)
+func (b *BoardModel) JumpToColumn(colIdx int) {
+	if colIdx < 0 || colIdx > 3 {
+		return
+	}
+	for i, activeCol := range b.activeColIdx {
+		if activeCol == colIdx {
+			b.focusedCol = i
+			return
+		}
+	}
+	// Column is empty - find nearest active column
+	bestIdx := 0
+	bestDist := 100
+	for i, activeCol := range b.activeColIdx {
+		dist := activeCol - colIdx
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist < bestDist {
+			bestDist = dist
+			bestIdx = i
+		}
+	}
+	b.focusedCol = bestIdx
+}
+
+// JumpToFirstColumn jumps to the first non-empty column (H key)
+func (b *BoardModel) JumpToFirstColumn() {
+	if len(b.activeColIdx) > 0 {
+		b.focusedCol = 0
+	}
+}
+
+// JumpToLastColumn jumps to the last non-empty column (L key)
+func (b *BoardModel) JumpToLastColumn() {
+	if len(b.activeColIdx) > 0 {
+		b.focusedCol = len(b.activeColIdx) - 1
+	}
+}
+
+// ClearWaitingForG clears the gg combo state
+func (b *BoardModel) ClearWaitingForG() { b.waitingForG = false }
+
+// SetWaitingForG sets the gg combo state
+func (b *BoardModel) SetWaitingForG() { b.waitingForG = true }
+
+// IsWaitingForG returns whether we're waiting for second g
+func (b *BoardModel) IsWaitingForG() bool { return b.waitingForG }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Search functionality (bv-yg39)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// IsSearchMode returns whether search mode is active
+func (b *BoardModel) IsSearchMode() bool { return b.searchMode }
+
+// StartSearch enters search mode
+func (b *BoardModel) StartSearch() {
+	b.searchMode = true
+	b.searchQuery = ""
+	b.searchMatches = nil
+	b.searchCursor = 0
+}
+
+// CancelSearch exits search mode and clears results
+func (b *BoardModel) CancelSearch() {
+	b.searchMode = false
+	b.searchQuery = ""
+	b.searchMatches = nil
+	b.searchCursor = 0
+}
+
+// FinishSearch exits search mode but keeps results for n/N navigation
+func (b *BoardModel) FinishSearch() {
+	b.searchMode = false
+}
+
+// SearchQuery returns the current search query
+func (b *BoardModel) SearchQuery() string { return b.searchQuery }
+
+// SearchMatchCount returns the number of matches
+func (b *BoardModel) SearchMatchCount() int { return len(b.searchMatches) }
+
+// SearchCursorPos returns current match position (1-indexed for display)
+func (b *BoardModel) SearchCursorPos() int {
+	if len(b.searchMatches) == 0 {
+		return 0
+	}
+	return b.searchCursor + 1
+}
+
+// AppendSearchChar adds a character to the search query
+func (b *BoardModel) AppendSearchChar(ch rune) {
+	b.searchQuery += string(ch)
+	b.updateSearchMatches()
+}
+
+// BackspaceSearch removes the last character from search query
+func (b *BoardModel) BackspaceSearch() {
+	if len(b.searchQuery) > 0 {
+		runes := []rune(b.searchQuery)
+		b.searchQuery = string(runes[:len(runes)-1])
+		b.updateSearchMatches()
+	}
+}
+
+// updateSearchMatches finds all cards matching the search query
+func (b *BoardModel) updateSearchMatches() {
+	b.searchMatches = nil
+	b.searchCursor = 0
+	if b.searchQuery == "" {
+		return
+	}
+	query := strings.ToLower(b.searchQuery)
+	for colIdx, issues := range b.columns {
+		for rowIdx, issue := range issues {
+			idLower := strings.ToLower(issue.ID)
+			titleLower := strings.ToLower(issue.Title)
+			if strings.Contains(idLower, query) || strings.Contains(titleLower, query) {
+				b.searchMatches = append(b.searchMatches, searchMatch{col: colIdx, row: rowIdx})
+			}
+		}
+	}
+	if len(b.searchMatches) > 0 {
+		b.jumpToMatch(0)
+	}
+}
+
+// jumpToMatch navigates to a specific match
+func (b *BoardModel) jumpToMatch(idx int) {
+	if idx < 0 || idx >= len(b.searchMatches) {
+		return
+	}
+	b.searchCursor = idx
+	match := b.searchMatches[idx]
+	for i, activeCol := range b.activeColIdx {
+		if activeCol == match.col {
+			b.focusedCol = i
+			break
+		}
+	}
+	b.selectedRow[match.col] = match.row
+}
+
+// NextMatch jumps to the next search match (n key)
+func (b *BoardModel) NextMatch() {
+	if len(b.searchMatches) == 0 {
+		return
+	}
+	b.jumpToMatch((b.searchCursor + 1) % len(b.searchMatches))
+}
+
+// PrevMatch jumps to the previous search match (N key)
+func (b *BoardModel) PrevMatch() {
+	if len(b.searchMatches) == 0 {
+		return
+	}
+	prevIdx := b.searchCursor - 1
+	if prevIdx < 0 {
+		prevIdx = len(b.searchMatches) - 1
+	}
+	b.jumpToMatch(prevIdx)
+}
+
+// IsMatchHighlighted returns true if position is current search match
+func (b *BoardModel) IsMatchHighlighted(colIdx, rowIdx int) bool {
+	if !b.searchMode || len(b.searchMatches) == 0 {
+		return false
+	}
+	match := b.searchMatches[b.searchCursor]
+	return match.col == colIdx && match.row == rowIdx
+}
+
+// IsSearchMatch returns true if position matches the search query
+func (b *BoardModel) IsSearchMatch(colIdx, rowIdx int) bool {
+	if !b.searchMode || b.searchQuery == "" {
+		return false
+	}
+	for _, m := range b.searchMatches {
+		if m.col == colIdx && m.row == rowIdx {
+			return true
+		}
+	}
+	return false
 }
 
 // Detail panel methods (bv-r6kh)
@@ -505,24 +727,52 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	t := b.theme
 
 	// ══════════════════════════════════════════════════════════════════════════
-	// CARD STYLING - Fixed 4-line height for consistency (bv-1daf)
+	// DETERMINE BLOCKING STATUS for color coding (bv-kklp)
+	// ══════════════════════════════════════════════════════════════════════════
+	hasBlockingDeps := false
+	for _, dep := range issue.Dependencies {
+		if dep != nil && dep.Type.IsBlocking() {
+			hasBlockingDeps = true
+			break
+		}
+	}
+	blocksOthers := len(b.blocksIndex[issue.ID]) > 0
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// CARD STYLING - Fixed 4-line height (bv-1daf) with blocking colors (bv-kklp)
 	// ══════════════════════════════════════════════════════════════════════════
 	cardStyle := t.Renderer.NewStyle().
 		Width(width).
 		Padding(0, 1).
 		MarginBottom(1)
 
+	// Border color based on blocking status (bv-kklp):
+	// - Red: Blocked (has blocking dependencies)
+	// - Yellow/Orange: High-impact (blocks others)
+	// - Green: Ready to work (open, no blockers)
+	// - Default: Normal border
+	var borderColor lipgloss.TerminalColor
 	if selected {
-		// Selected: elevated with accent border
+		borderColor = t.Primary // Selected always uses primary
+	} else if hasBlockingDeps {
+		borderColor = lipgloss.AdaptiveColor{Light: "#c62828", Dark: "#ef5350"} // Red - blocked
+	} else if blocksOthers {
+		borderColor = lipgloss.AdaptiveColor{Light: "#f57c00", Dark: "#ffb74d"} // Yellow/orange - high impact
+	} else if issue.Status == model.StatusOpen {
+		borderColor = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Green - ready
+	} else {
+		borderColor = t.Border // Default border
+	}
+
+	if selected {
 		cardStyle = cardStyle.
 			Background(t.Highlight).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(t.Primary)
+			BorderForeground(borderColor)
 	} else {
-		// Unselected: subtle card with bottom border
 		cardStyle = cardStyle.
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(t.Border)
+			BorderForeground(borderColor)
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -584,12 +834,18 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	// ══════════════════════════════════════════════════════════════════════════
 	var meta []string
 
-	// Blocked-by indicator: 🚫←bv-456 (compact) - show first blocking dep
+	// Blocked-by indicator: 🚫←bv-456 (title...) - show first blocking dep with title (bv-kklp)
 	for _, dep := range issue.Dependencies {
 		if dep != nil && dep.Type.IsBlocking() {
 			blockerID := truncateRunesHelper(dep.DependsOnID, 10, "…")
 			blockedStyle := t.Renderer.NewStyle().Foreground(t.Blocked)
-			meta = append(meta, blockedStyle.Render("🚫←"+blockerID))
+			// Try to get blocker title for better context
+			blockerBadge := "🚫←" + blockerID
+			if blocker, ok := b.issueMap[dep.DependsOnID]; ok && blocker != nil {
+				titleSnippet := truncateRunesHelper(blocker.Title, 12, "…")
+				blockerBadge = fmt.Sprintf("🚫←%s (%s)", blockerID, titleSnippet)
+			}
+			meta = append(meta, blockedStyle.Render(blockerBadge))
 			break // Only show first blocker
 		}
 	}

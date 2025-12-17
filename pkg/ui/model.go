@@ -411,6 +411,17 @@ func (m Model) filterIssuesByLabel(label string) []model.Issue {
 	return out
 }
 
+// extractLabelCounts converts LabelStats map to a simple count map for the label picker
+func extractLabelCounts(stats map[string]*analysis.LabelStats) map[string]int {
+	counts := make(map[string]int)
+	for label, stat := range stats {
+		if stat != nil {
+			counts[label] = stat.TotalCount
+		}
+	}
+	return counts
+}
+
 // WorkspaceInfo contains workspace loading metadata for TUI display
 type WorkspaceInfo struct {
 	Enabled      bool
@@ -618,7 +629,8 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 
 	// Initialize label picker (bv-126)
 	labelExtraction := analysis.ExtractLabels(issues)
-	labelPicker := NewLabelPickerModel(labelExtraction.Labels, theme)
+	labelCounts := extractLabelCounts(labelExtraction.Stats)
+	labelPicker := NewLabelPickerModel(labelExtraction.Labels, labelCounts, theme)
 
 	// Initialize time-travel input
 	ti := textinput.New()
@@ -1689,7 +1701,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Update labels in case they changed
 				labelExtraction := analysis.ExtractLabels(m.issues)
-				m.labelPicker.SetLabels(labelExtraction.Labels)
+				labelCounts := extractLabelCounts(labelExtraction.Stats)
+				m.labelPicker.SetLabels(labelExtraction.Labels, labelCounts)
 				m.labelPicker.Reset()
 				m.labelPicker.SetSize(m.width, m.height-1)
 				m.showLabelPicker = true
@@ -3595,7 +3608,7 @@ func (m *Model) renderFooter() string {
 		if m.timeTravelMode {
 			keyHints = append(keyHints, keyStyle.Render("t")+" exit diff", keyStyle.Render("C")+" copy", keyStyle.Render("abgi")+" views", keyStyle.Render("?")+" help")
 		} else if m.isSplitView {
-			keyHints = append(keyHints, keyStyle.Render("tab")+" focus", keyStyle.Render("C")+" copy", keyStyle.Render("E")+" export", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("tab")+" focus", keyStyle.Render("C")+" copy", keyStyle.Render("x")+" export", keyStyle.Render("?")+" help")
 		} else if m.showDetails {
 			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("?")+" help")
 		} else {

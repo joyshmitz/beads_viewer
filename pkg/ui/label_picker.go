@@ -12,6 +12,7 @@ import (
 // LabelPickerModel provides a fuzzy search popup for quick label filtering
 type LabelPickerModel struct {
 	allLabels     []string
+	labelCounts   map[string]int // count of issues per label
 	filtered      []string
 	input         textinput.Model
 	selectedIndex int
@@ -21,11 +22,10 @@ type LabelPickerModel struct {
 }
 
 // NewLabelPickerModel creates a new label picker with fuzzy search
-func NewLabelPickerModel(labels []string, theme Theme) LabelPickerModel {
-	// Sort labels alphabetically
-	sorted := make([]string, len(labels))
-	copy(sorted, labels)
-	sort.Strings(sorted)
+// labels should be pre-sorted by count descending (from LabelExtractionResult.TopLabels)
+func NewLabelPickerModel(labels []string, counts map[string]int, theme Theme) LabelPickerModel {
+	// Sort labels by count descending
+	sorted := sortLabelsByCountDesc(labels, counts)
 
 	ti := textinput.New()
 	ti.Placeholder = "type to filter..."
@@ -35,11 +35,27 @@ func NewLabelPickerModel(labels []string, theme Theme) LabelPickerModel {
 
 	return LabelPickerModel{
 		allLabels:     sorted,
+		labelCounts:   counts,
 		filtered:      sorted,
 		input:         ti,
 		selectedIndex: 0,
 		theme:         theme,
 	}
+}
+
+// sortLabelsByCountDesc sorts labels by count descending, then alphabetically for ties
+func sortLabelsByCountDesc(labels []string, counts map[string]int) []string {
+	sorted := make([]string, len(labels))
+	copy(sorted, labels)
+	sort.Slice(sorted, func(i, j int) bool {
+		ci := counts[sorted[i]]
+		cj := counts[sorted[j]]
+		if ci != cj {
+			return ci > cj // descending by count
+		}
+		return sorted[i] < sorted[j] // alphabetically for ties
+	})
+	return sorted
 }
 
 // SetSize updates the picker dimensions
@@ -48,12 +64,10 @@ func (m *LabelPickerModel) SetSize(width, height int) {
 	m.height = height
 }
 
-// SetLabels updates the available labels
-func (m *LabelPickerModel) SetLabels(labels []string) {
-	sorted := make([]string, len(labels))
-	copy(sorted, labels)
-	sort.Strings(sorted)
-	m.allLabels = sorted
+// SetLabels updates the available labels with their counts
+func (m *LabelPickerModel) SetLabels(labels []string, counts map[string]int) {
+	m.labelCounts = counts
+	m.allLabels = sortLabelsByCountDesc(labels, counts)
 	m.filterLabels()
 }
 
@@ -261,8 +275,10 @@ func (m *LabelPickerModel) View() string {
 			isSelected := i == m.selectedIndex
 
 			itemStyle := t.Renderer.NewStyle()
+			countStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
 			if isSelected {
 				itemStyle = itemStyle.Foreground(t.Primary).Bold(true)
+				countStyle = countStyle.Foreground(t.Primary)
 			} else {
 				itemStyle = itemStyle.Foreground(t.Base.GetForeground())
 			}
@@ -272,8 +288,16 @@ func (m *LabelPickerModel) View() string {
 				prefix = "> "
 			}
 
-			displayLabel := truncateRunesHelper(label, boxWidth-8, "...")
-			lines = append(lines, itemStyle.Render(prefix+displayLabel))
+			// Format label with count in parentheses
+			count := m.labelCounts[label]
+			countStr := " (" + itoa(count) + ")"
+			// Reserve space for count when truncating label
+			maxLabelLen := boxWidth - 8 - len(countStr)
+			if maxLabelLen < 10 {
+				maxLabelLen = 10
+			}
+			displayLabel := truncateRunesHelper(label, maxLabelLen, "...")
+			lines = append(lines, itemStyle.Render(prefix+displayLabel)+countStyle.Render(countStr))
 		}
 
 		// Show count if scrolling

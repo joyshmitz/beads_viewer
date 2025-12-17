@@ -56,32 +56,44 @@ func TestFuzzyScoreWordBoundaryBonus(t *testing.T) {
 
 func TestNewLabelPickerModel(t *testing.T) {
 	labels := []string{"zebra", "api", "backend", "core"}
-	picker := NewLabelPickerModel(labels, Theme{})
-
-	// Should be sorted alphabetically
-	if picker.allLabels[0] != "api" {
-		t.Errorf("Expected first label to be 'api' (sorted), got %s", picker.allLabels[0])
+	counts := map[string]int{
+		"zebra":   5,
+		"api":     10,
+		"backend": 3,
+		"core":    7,
 	}
-	if picker.allLabels[3] != "zebra" {
-		t.Errorf("Expected last label to be 'zebra' (sorted), got %s", picker.allLabels[3])
+	picker := NewLabelPickerModel(labels, counts, Theme{})
+
+	// Should be sorted by count descending: api(10), core(7), zebra(5), backend(3)
+	if picker.allLabels[0] != "api" {
+		t.Errorf("Expected first label to be 'api' (highest count), got %s", picker.allLabels[0])
+	}
+	if picker.allLabels[1] != "core" {
+		t.Errorf("Expected second label to be 'core' (second highest), got %s", picker.allLabels[1])
+	}
+	if picker.allLabels[3] != "backend" {
+		t.Errorf("Expected last label to be 'backend' (lowest count), got %s", picker.allLabels[3])
 	}
 }
 
 func TestLabelPickerSetLabels(t *testing.T) {
-	picker := NewLabelPickerModel([]string{"a"}, Theme{})
-	picker.SetLabels([]string{"z", "m", "a"})
+	picker := NewLabelPickerModel([]string{"a"}, map[string]int{"a": 1}, Theme{})
+	picker.SetLabels([]string{"z", "m", "a"}, map[string]int{"z": 10, "m": 5, "a": 1})
 
 	if len(picker.allLabels) != 3 {
 		t.Errorf("Expected 3 labels, got %d", len(picker.allLabels))
 	}
-	if picker.allLabels[0] != "a" {
-		t.Errorf("Expected first label 'a', got %s", picker.allLabels[0])
+	// Should be sorted by count descending: z(10), m(5), a(1)
+	if picker.allLabels[0] != "z" {
+		t.Errorf("Expected first label 'z' (highest count), got %s", picker.allLabels[0])
 	}
 }
 
 func TestLabelPickerNavigation(t *testing.T) {
 	labels := []string{"api", "backend", "core"}
-	picker := NewLabelPickerModel(labels, Theme{})
+	// All same count so sorted alphabetically for ties
+	counts := map[string]int{"api": 5, "backend": 5, "core": 5}
+	picker := NewLabelPickerModel(labels, counts, Theme{})
 
 	if picker.SelectedLabel() != "api" {
 		t.Errorf("Expected initial selection 'api', got %s", picker.SelectedLabel())
@@ -110,7 +122,7 @@ func TestLabelPickerNavigation(t *testing.T) {
 }
 
 func TestLabelPickerEmptySelection(t *testing.T) {
-	picker := NewLabelPickerModel([]string{}, Theme{})
+	picker := NewLabelPickerModel([]string{}, map[string]int{}, Theme{})
 	if picker.SelectedLabel() != "" {
 		t.Errorf("Expected empty selection from empty labels, got %s", picker.SelectedLabel())
 	}
@@ -118,7 +130,8 @@ func TestLabelPickerEmptySelection(t *testing.T) {
 
 func TestLabelPickerFilteredCount(t *testing.T) {
 	labels := []string{"api", "api-v2", "backend", "core"}
-	picker := NewLabelPickerModel(labels, Theme{})
+	counts := map[string]int{"api": 5, "api-v2": 3, "backend": 2, "core": 1}
+	picker := NewLabelPickerModel(labels, counts, Theme{})
 
 	if picker.FilteredCount() != 4 {
 		t.Errorf("Expected 4 filtered labels initially, got %d", picker.FilteredCount())
@@ -127,7 +140,8 @@ func TestLabelPickerFilteredCount(t *testing.T) {
 
 func TestLabelPickerReset(t *testing.T) {
 	labels := []string{"api", "backend"}
-	picker := NewLabelPickerModel(labels, Theme{})
+	counts := map[string]int{"api": 5, "backend": 5}
+	picker := NewLabelPickerModel(labels, counts, Theme{})
 	picker.MoveDown()
 	picker.Reset()
 

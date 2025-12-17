@@ -130,6 +130,7 @@ func (s *ShortcutsSidebar) allSections() []shortcutSection {
 				{"j/k", "Navigate items"},
 				{"e", "Explanations"},
 				{"x", "Calc details"},
+				{"m", "Toggle heatmap"},
 				{"Enter", "Jump to issue"},
 			},
 		},
@@ -169,7 +170,7 @@ func (s *ShortcutsSidebar) allSections() []shortcutSection {
 			contexts: []string{"list", "detail", "split"},
 			items: []shortcutItem{
 				{"t/T", "Time-travel"},
-				{"E", "Export Markdown"},
+				{"x", "Export Markdown"},
 				{"C", "Copy to clipboard"},
 				{"O", "Open in editor"},
 				{"R", "Recipe picker"},

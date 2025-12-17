@@ -3,7 +3,6 @@ package export
 import (
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"os"
 	"regexp"
 	"sort"
@@ -118,104 +117,16 @@ func GenerateMarkdown(issues []model.Issue, title string) (string, error) {
 
 	// Dependency Graph (Mermaid)
 	sb.WriteString("## Dependency Graph\n\n")
-	sb.WriteString("```mermaid\ngraph TD\n")
+	sb.WriteString("```mermaid\n")
 
-	// Style definitions
-	sb.WriteString("    classDef open fill:#50FA7B,stroke:#333,color:#000\n")
-	sb.WriteString("    classDef inprogress fill:#8BE9FD,stroke:#333,color:#000\n")
-	sb.WriteString("    classDef blocked fill:#FF5555,stroke:#333,color:#000\n")
-	sb.WriteString("    classDef closed fill:#6272A4,stroke:#333,color:#fff\n")
-	sb.WriteString("\n")
-
-	hasLinks := false
 	issueIDs := make(map[string]bool)
 	for _, i := range issues {
 		issueIDs[i.ID] = true
 	}
 
-	// Build deterministic, collision-free Mermaid IDs
-	safeIDMap := make(map[string]string)
-	usedSafe := make(map[string]bool)
-	getSafeID := func(orig string) string {
-		if safe, ok := safeIDMap[orig]; ok {
-			return safe
-		}
-		base := sanitizeMermaidID(orig)
-		if base == "" {
-			base = "node"
-		}
-		safe := base
-		if usedSafe[safe] && safeIDMap[orig] == "" {
-			// Collision: derive stable hash-based suffix
-			h := fnv.New32a()
-			_, _ = h.Write([]byte(orig))
-			safe = fmt.Sprintf("%s_%x", base, h.Sum32())
-		}
-		usedSafe[safe] = true
-		safeIDMap[orig] = safe
-		return safe
-	}
+	graph := GenerateMermaidGraph(issues, issueIDs, MermaidConfig{ShowNoDependenciesNode: true})
+	sb.WriteString(graph)
 
-	for _, i := range issues {
-		safeID := getSafeID(i.ID)
-		safeTitle := sanitizeMermaidText(i.Title)
-		// Also sanitize the ID for the label in case it contains quotes or special chars
-		safeLabelID := sanitizeMermaidText(i.ID)
-
-		// Node definition with status-based styling
-		sb.WriteString(fmt.Sprintf("    %s[\"%s<br/>%s\"]\n", safeID, safeLabelID, safeTitle))
-
-		// Apply class based on status
-		var class string
-		switch i.Status {
-		case model.StatusOpen:
-			class = "open"
-		case model.StatusInProgress:
-			class = "inprogress"
-		case model.StatusBlocked:
-			class = "blocked"
-		case model.StatusClosed:
-			class = "closed"
-		}
-		sb.WriteString(fmt.Sprintf("    class %s %s\n", safeID, class))
-
-		// Sort dependencies for deterministic output
-		sortedDeps := make([]*model.Dependency, len(i.Dependencies))
-		copy(sortedDeps, i.Dependencies)
-		sort.Slice(sortedDeps, func(a, b int) bool {
-			// Handle nil safety just in case
-			if sortedDeps[a] == nil {
-				return false
-			}
-			if sortedDeps[b] == nil {
-				return true
-			}
-			return sortedDeps[a].DependsOnID < sortedDeps[b].DependsOnID
-		})
-
-		// Add edges for dependencies
-		for _, dep := range sortedDeps {
-			if dep == nil {
-				continue
-			}
-			// Only add edges to issues that exist in our set
-			if !issueIDs[dep.DependsOnID] {
-				continue
-			}
-
-			safeDepID := getSafeID(dep.DependsOnID)
-			linkStyle := "-.->" // Dashed for related
-			if dep.Type == model.DepBlocks {
-				linkStyle = "==>" // Bold for blockers
-			}
-			sb.WriteString(fmt.Sprintf("    %s %s %s\n", safeID, linkStyle, safeDepID))
-			hasLinks = true
-		}
-	}
-
-	if !hasLinks && len(issues) > 0 {
-		sb.WriteString("    NoLinks[\"No Dependencies\"]\n")
-	}
 	sb.WriteString("```\n\n")
 	sb.WriteString("---\n\n")
 

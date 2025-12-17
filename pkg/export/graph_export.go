@@ -261,14 +261,19 @@ func generateDOT(issues []model.Issue, issueIDs map[string]bool, stats *analysis
 
 	// Nodes
 	for _, i := range sortedIssues {
-		// Escape quotes in title
-		title := strings.ReplaceAll(i.Title, "\"", "\\\"")
-		if len(title) > 30 {
-			title = title[:27] + "..."
+		// Truncate title first to ensure we don't split escape sequences later
+		rawTitle := i.Title
+		if len(rawTitle) > 30 {
+			rawTitle = rawTitle[:27] + "..."
 		}
 
-		// Escape quotes in ID for the label
-		escapedID := strings.ReplaceAll(i.ID, "\"", "\\\"")
+		// Escape backslashes first, then quotes
+		title := strings.ReplaceAll(rawTitle, "\\", "\\\\")
+		title = strings.ReplaceAll(title, "\"", "\\\"")
+
+		// Escape quotes in ID for the label (IDs shouldn't have backslashes usually, but safe to escape)
+		escapedID := strings.ReplaceAll(i.ID, "\\", "\\\\")
+		escapedID = strings.ReplaceAll(escapedID, "\"", "\\\"")
 
 		// Status color
 		color := dotStatusColor(i.Status)

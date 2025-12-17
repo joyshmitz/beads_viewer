@@ -399,7 +399,15 @@ func (c *Calculator) checkStaleness(result *Result) {
 	}
 	now := time.Now().UTC()
 	for _, issue := range c.issues {
-		if issue.Status == model.StatusClosed || issue.UpdatedAt.IsZero() {
+		if issue.Status == model.StatusClosed {
+			continue
+		}
+
+		lastActive := issue.UpdatedAt
+		if lastActive.IsZero() {
+			lastActive = issue.CreatedAt
+		}
+		if lastActive.IsZero() {
 			continue
 		}
 
@@ -414,7 +422,7 @@ func (c *Calculator) checkStaleness(result *Result) {
 			crit *= inProgressMult
 		}
 
-		days := now.Sub(issue.UpdatedAt).Hours() / 24.0
+		days := now.Sub(lastActive).Hours() / 24.0
 		severity := Severity("")
 		if days >= crit {
 			severity = SeverityCritical
@@ -433,7 +441,7 @@ func (c *Calculator) checkStaleness(result *Result) {
 			DetectedAt: now,
 			Details: []string{
 				fmt.Sprintf("status=%s", issue.Status),
-				fmt.Sprintf("last_update=%s", issue.UpdatedAt.Format(time.RFC3339)),
+				fmt.Sprintf("last_update=%s", lastActive.Format(time.RFC3339)),
 			},
 		})
 	}

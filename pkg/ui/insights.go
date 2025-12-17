@@ -291,6 +291,7 @@ func (m *InsightsModel) MoveUp() {
 	}
 	if m.selectedIndex[m.focusedPanel] > 0 {
 		m.selectedIndex[m.focusedPanel]--
+		m.updateDetailContent()
 	}
 }
 
@@ -301,11 +302,49 @@ func (m *InsightsModel) MoveDown() {
 	}
 	if m.selectedIndex[m.focusedPanel] < count-1 {
 		m.selectedIndex[m.focusedPanel]++
+		m.updateDetailContent()
 	}
+}
+
+// ScrollDetailUp scrolls the detail panel viewport up
+func (m *InsightsModel) ScrollDetailUp() {
+	m.detailVP.LineUp(3)
+}
+
+// ScrollDetailDown scrolls the detail panel viewport down
+func (m *InsightsModel) ScrollDetailDown() {
+	m.detailVP.LineDown(3)
+}
+
+// updateDetailContent updates the viewport with current selection's markdown
+func (m *InsightsModel) updateDetailContent() {
+	selectedID := m.SelectedIssueID()
+	if selectedID == "" {
+		m.detailContent = ""
+		m.detailVP.SetContent("")
+		m.detailVP.GotoTop()
+		return
+	}
+
+	mdContent := m.buildDetailMarkdown(selectedID)
+	if m.mdRenderer != nil {
+		rendered, err := m.mdRenderer.Render(mdContent)
+		if err == nil {
+			m.detailContent = rendered
+			m.detailVP.SetContent(rendered)
+			m.detailVP.GotoTop()
+			return
+		}
+	}
+	// Fallback to raw markdown
+	m.detailContent = mdContent
+	m.detailVP.SetContent(mdContent)
+	m.detailVP.GotoTop()
 }
 
 func (m *InsightsModel) NextPanel() {
 	m.focusedPanel = (m.focusedPanel + 1) % PanelCount
+	m.updateDetailContent()
 }
 
 func (m *InsightsModel) PrevPanel() {
@@ -314,6 +353,7 @@ func (m *InsightsModel) PrevPanel() {
 	} else {
 		m.focusedPanel--
 	}
+	m.updateDetailContent()
 }
 
 func (m *InsightsModel) ToggleExplanations() {
@@ -1568,12 +1608,17 @@ func (m *InsightsModel) renderCalculationProofMD(selectedID string) string {
 }
 
 func (m *InsightsModel) renderDetailPanel(width, height int, t Theme) string {
-	panelStyle := t.Renderer.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Primary).
-		Width(width).
-		Height(height).
-		Padding(0, 1)
+	// Update viewport dimensions
+	vpWidth := width - 4  // Account for border
+	vpHeight := height - 4 // Account for border and scroll hint
+	if vpWidth < 20 {
+		vpWidth = 20
+	}
+	if vpHeight < 5 {
+		vpHeight = 5
+	}
+	m.detailVP.Width = vpWidth
+	m.detailVP.Height = vpHeight
 
 	selectedID := m.SelectedIssueID()
 	if selectedID == "" {
@@ -1585,46 +1630,46 @@ Navigate to a metric panel and select an item to view its details here.
 **Navigation:**
 - ← → to switch panels
 - ↑ ↓ to select items
+- Ctrl+j/k scroll details
 - Enter to view in main view
 `
 		if m.mdRenderer != nil {
 			rendered, err := m.mdRenderer.Render(emptyContent)
 			if err == nil {
-				return panelStyle.Render(rendered)
+				m.detailVP.SetContent(rendered)
 			}
+		} else {
+			m.detailVP.SetContent(emptyContent)
 		}
-		emptyStyle := t.Renderer.NewStyle().
-			Foreground(t.Subtext).
+	} else if m.detailContent == "" {
+		// Ensure content is populated if not already
+		m.updateDetailContent()
+	}
+
+	// Build the panel with viewport and scroll indicator
+	var sb strings.Builder
+	sb.WriteString(m.detailVP.View())
+
+	// Add scroll indicator if content overflows
+	scrollPercent := m.detailVP.ScrollPercent()
+	if scrollPercent < 1.0 || m.detailVP.YOffset > 0 {
+		scrollHint := t.Renderer.NewStyle().
+			Foreground(t.Secondary).
 			Italic(true).
-			Width(width - 4).
-			Align(lipgloss.Center)
-		return panelStyle.Render(emptyStyle.Render("\nSelect a bead to view details"))
+			Render(fmt.Sprintf("─ %d%% ─ ctrl+j/k scroll", int(scrollPercent*100)))
+		sb.WriteString("\n")
+		sb.WriteString(scrollHint)
 	}
 
-	issue := m.issueMap[selectedID]
-	if issue == nil {
-		return panelStyle.Render(t.Renderer.NewStyle().Foreground(t.Subtext).Render("Issue not found: " + selectedID))
-	}
+	// Panel border style
+	panelStyle := t.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Primary).
+		Width(width).
+		Height(height).
+		Padding(0, 1)
 
-	// Build markdown content and render with glamour
-	mdContent := m.buildDetailMarkdown(selectedID)
-
-	if m.mdRenderer != nil {
-		rendered, err := m.mdRenderer.Render(mdContent)
-		if err == nil {
-			// Truncate to fit panel height (approximate line count)
-			lines := strings.Split(rendered, "\n")
-			maxLines := height - 2
-			if len(lines) > maxLines {
-				lines = lines[:maxLines]
-				lines = append(lines, t.Renderer.NewStyle().Foreground(t.Subtext).Italic(true).Render("... (scroll for more)"))
-			}
-			return panelStyle.Render(strings.Join(lines, "\n"))
-		}
-	}
-
-	// Fallback to raw markdown if renderer fails
-	return panelStyle.Render(wrapText(mdContent, width-4))
+	return panelStyle.Render(sb.String())
 }
 
 // formatMetricValue formats a metric value nicely

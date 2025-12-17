@@ -2222,6 +2222,12 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 		m.insightsPanel.MoveDown()
 	case "k", "up":
 		m.insightsPanel.MoveUp()
+	case "ctrl+j":
+		// Scroll detail panel down
+		m.insightsPanel.ScrollDetailDown()
+	case "ctrl+k":
+		// Scroll detail panel up
+		m.insightsPanel.ScrollDetailUp()
 	case "h", "left":
 		m.insightsPanel.PrevPanel()
 	case "l", "right", "tab":

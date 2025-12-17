@@ -11,8 +11,8 @@ func TestNewShortcutsSidebar(t *testing.T) {
 	theme := Theme{Renderer: lipgloss.DefaultRenderer()}
 	sidebar := NewShortcutsSidebar(theme)
 
-	if sidebar.width != 28 {
-		t.Errorf("Expected width 28, got %d", sidebar.width)
+	if sidebar.width != 34 {
+		t.Errorf("Expected width 34, got %d", sidebar.width)
 	}
 	if sidebar.context != "list" {
 		t.Errorf("Expected context 'list', got %q", sidebar.context)
@@ -162,7 +162,7 @@ func TestShortcutsSidebarWidth(t *testing.T) {
 	theme := Theme{Renderer: lipgloss.DefaultRenderer()}
 	sidebar := NewShortcutsSidebar(theme)
 
-	if sidebar.Width() != 28 {
-		t.Errorf("Expected Width() = 28, got %d", sidebar.Width())
+	if sidebar.Width() != 34 {
+		t.Errorf("Expected Width() = 34, got %d", sidebar.Width())
 	}
 }

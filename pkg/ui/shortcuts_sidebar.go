@@ -129,6 +129,7 @@ func (s *ShortcutsSidebar) allSections() []shortcutSection {
 			items: []shortcutItem{
 				{"h/l", "Switch panel"},
 				{"j/k", "Select item"},
+				{"^j/^k", "Scroll detail"},
 				{"e", "Explanations"},
 				{"x", "Calc proof"},
 				{"m", "Heatmap"},

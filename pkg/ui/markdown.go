@@ -223,44 +223,38 @@ func buildStyleFromTheme(theme Theme, isDark bool) ansi.StyleConfig {
 		},
 		H1: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(primaryColor),
-				Bold:   boolPtr(true),
-				Prefix: "# ",
+				Color: stringPtr(primaryColor),
+				Bold:  boolPtr(true),
 			},
 		},
 		H2: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(primaryColor),
-				Bold:   boolPtr(true),
-				Prefix: "## ",
+				Color: stringPtr(primaryColor),
+				Bold:  boolPtr(true),
 			},
 		},
 		H3: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(primaryColor),
-				Bold:   boolPtr(true),
-				Prefix: "### ",
+				Color: stringPtr(primaryColor),
+				Bold:  boolPtr(true),
 			},
 		},
 		H4: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(secondaryColor),
-				Bold:   boolPtr(true),
-				Prefix: "#### ",
+				Color: stringPtr(secondaryColor),
+				Bold:  boolPtr(true),
 			},
 		},
 		H5: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(secondaryColor),
-				Bold:   boolPtr(true),
-				Prefix: "##### ",
+				Color: stringPtr(secondaryColor),
+				Bold:  boolPtr(true),
 			},
 		},
 		H6: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(mutedColor),
-				Bold:   boolPtr(true),
-				Prefix: "###### ",
+				Color: stringPtr(mutedColor),
+				Bold:  boolPtr(true),
 			},
 		},
 		Strong: ansi.StylePrimitive{

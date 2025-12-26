@@ -3336,6 +3336,12 @@ func (m Model) restoreFocusFromHelp() focus {
 	if m.focusBeforeHelp == focusAttention {
 		return focusAttention
 	}
+	if m.focusBeforeHelp == focusLabelPicker {
+		return focusLabelPicker
+	}
+	if m.focusBeforeHelp == focusTimeTravelInput {
+		return focusTimeTravelInput
+	}
 	// Default: return to list
 	return focusList
 }

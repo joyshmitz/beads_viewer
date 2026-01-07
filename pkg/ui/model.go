@@ -6308,9 +6308,14 @@ func (m *Model) openInEditor() {
 		// This matches git's behavior with $EDITOR
 		switch runtime.GOOS {
 		case "windows":
-			cmd = exec.Command("cmd", "/c", editor+" \""+beadsFile+"\"")
+			// Escape double quotes and wrap in double quotes for Windows cmd.exe
+			escapedFile := strings.ReplaceAll(beadsFile, `"`, `""`)
+			cmd = exec.Command("cmd", "/c", editor+` "`+escapedFile+`"`)
 		default:
-			cmd = exec.Command("sh", "-c", editor+" \""+beadsFile+"\"")
+			// Use single quotes for Unix shells to prevent all shell expansion.
+			// Single quotes within the path are escaped as: end quote, escaped quote, start quote.
+			escapedFile := strings.ReplaceAll(beadsFile, "'", `'\''`)
+			cmd = exec.Command("sh", "-c", editor+" '"+escapedFile+"'")
 		}
 	} else {
 		// Simple editor command without arguments
